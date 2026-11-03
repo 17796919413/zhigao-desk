@@ -1,0 +1,1 @@
+pdfjs-dist 6.5.438 (Apache-2.0), legacy build. Source: https://registry.npmmirror.com/pdfjs-dist/-/pdfjs-dist-6.5.438.tgz sha256 7461aefcd27c4ef0dd76f9ca5760f09466eb6b3f934432670c12132e7b3d6faa
