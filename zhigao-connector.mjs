@@ -16,7 +16,7 @@ import readline from 'node:readline';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 const PORT = Number(process.env.ZHIGAO_PORT) || 47821;
 const HOME = path.join(os.homedir(), '.zhigao');
 const SELF = fileURLToPath(import.meta.url);
@@ -166,14 +166,20 @@ function validateWrite(write, sheet) {
   if (!HEADER_FIELDS[write.field]?.includes(normFeishu(write.header))) throw Error('目标列与待写入字段不对应，已拒绝写入。');
   if (sheet.headers.filter(x => x === write.header).length !== 1) throw Error('目标表头重复，无法安全定位列。');
   const k = write.key, kc = write.keyColumns;
-  if (!k || !kc || !['author', 'platform', 'title'].every(x => typeof k[x] === 'string' && k[x].trim() && Number.isInteger(kc[x]) && kc[x] >= 0 && kc[x] < sheet.headers.length))
-    throw Error('行匹配信息不完整，已停止写入。');
-  for (const x of ['author', 'platform', 'title']) if (!HEADER_FIELDS[x].includes(normFeishu(sheet.headers[kc[x]]))) throw Error('行匹配列与达人、平台或标题字段不对应，已停止写入。');
+  const keyNames=['author','platform'];
+  if (!k || !kc || !keyNames.every(x => typeof k[x] === 'string' && k[x].trim() && Number.isInteger(kc[x]) && kc[x] >= 0 && kc[x] < sheet.headers.length))
+    throw Error('行匹配信息不完整，请重新关联达人。');
+  const titleColumns=sheet.headers.map((h,i)=>HEADER_FIELDS.title.includes(normFeishu(h))?i:-1).filter(i=>i>=0);
+  if(titleColumns.length){
+    if(titleColumns.length!==1||kc.title!==titleColumns[0]||typeof k.title!=='string')throw Error('产品或标题列已变化，请重新读取表格。');
+    keyNames.push('title');
+  }else if(kc.title!==-1||k.title!=='')throw Error('当前表没有产品或标题列，请重新读取表格。');
+  for (const x of keyNames) if (!HEADER_FIELDS[x].includes(normFeishu(sheet.headers[kc[x]]))) throw Error('达人匹配字段已变化，请重新关联。');
   const matches = sheet.rows.map((row, i) => ({row, i})).filter(({row}) =>
-    ['author', 'platform', 'title'].every(x => normFeishu(row[kc[x]]) === normFeishu(k[x])));
-  if (matches.length !== 1) throw Error(matches.length ? '达人、平台和标题匹配到多行，需人工处理后再同步。' : '飞书中找不到这条达人、平台和标题记录，请重新绑定。');
+    keyNames.every(x => normFeishu(row[kc[x]]) === normFeishu(k[x])));
+  if (matches.length !== 1) throw Error(matches.length ? '同名达人匹配到多行，请选择对应记录。' : '未找到对应达人，请重新关联。');
   const item = matches[0], physicalRow = sheet.rowStart + 1 + item.i;
-  return {physicalRow, keyColumns: Object.values(kc), row: item.row};
+  return {physicalRow, keyNames, keyColumns: keyNames.map(k=>kc[k]), row: item.row};
 }
 
 async function writeFeishu(url, sheetId, writes) {
@@ -189,7 +195,7 @@ async function writeFeishu(url, sheetId, writes) {
       if (seen.has(unique)) throw Error('同一单元格重复出现在待写入清单中。');
       seen.add(unique);
       const fresh = await freshRowCells(url, sheetId, match.physicalRow, [...match.keyColumns, w.column]);
-      for (const key of ['author', 'platform', 'title']) {
+      for (const key of match.keyNames) {
         const c = fresh.get(w.keyColumns[key]);
         if (normFeishu(c?.value) !== normFeishu(w.key[key])) throw Error('写入前达人、平台或标题已变化，已拒绝写入。');
       }

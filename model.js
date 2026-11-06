@@ -10,10 +10,10 @@ export function reviewStatus(t){const r=pendingRules(t),a=pendingAI(t),n=pending
 // 送审流转：内部复核完成不等于品牌通过，只有人工记录“品牌通过”才进入 passed。
 export const FLOW_STATES={
  review:{label:'审核复核中',tone:'amber',hint:'处理规则与 AI 建议，并人工通读修改稿；确认没问题后点“复核完成”。'},
- ready:{label:'待交品牌',tone:'amber',hint:'内部复核已完成。请导出并自行发给品牌方，发出后点“记录已提交品牌”。工作台不会自动发送。'},
- brand:{label:'品牌审核中',tone:'gray',hint:'等待品牌方反馈。品牌明确通过才可记录“品牌通过”；内部复核完成不等于品牌通过。'},
+ ready:{label:'待交品牌',tone:'amber',hint:'导出稿件发给品牌方，然后记录提交。'},
+ brand:{label:'品牌审核中',tone:'gray',hint:'等待品牌方反馈。'},
  revise:{label:'待达人修改',tone:'red',hint:'品牌有修改意见。请反馈达人，收到新版后点“收到新版，开始下一轮”上传。'},
- passed:{label:'该阶段品牌通过',tone:'dark',hint:'品牌已通过这一版。请等待达人发来下一阶段稿件；通过不等于已发布。'}
+ passed:{label:'该阶段品牌通过',tone:'dark',hint:'品牌已通过这一版，等待下一阶段稿件。'}
 };
 export const newFlow=(round=1)=>({state:'review',round,submissions:[],feedback:[],log:[]});
 export const flowOf=t=>t.flow||newFlow();
