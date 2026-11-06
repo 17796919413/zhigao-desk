@@ -31,6 +31,8 @@ export function applyFlow(task,kind,{note='',text='',fp='',changed=0,exportedAt=
  else{f.state='brand';f.passedFp=null;f.passedAt=null;logFlow(f,`${R} 撤销“品牌通过”，回到品牌审核中${N}`);}
  return f;
 }
+// 补充品牌反馈：任何状态下都可追加原话，不改变送审状态（例如上传新版后品牌又补了意见）。
+export function addFeedbackNote(task,text){const s=String(text||'').trim();if(!s)throw Error('请先粘贴品牌反馈原话。');const f=task.flow||(task.flow=newFlow()),at=new Date().toISOString();f.feedback.push({at,round:f.round,text:s,extra:true});logFlow(f,`第 ${f.round} 轮 补充品牌反馈原话`);return f;}
 export function nextRound(prev){const f=flowOf(prev),n=newFlow(f.round+1);n.submissions=f.submissions;n.feedback=f.feedback;n.log=[...f.log];logFlow(n,`收到达人新版，开始第 ${n.round} 轮`);return n;}
 // 内容任务 = 一个达人在一个平台的一篇内容。发布信息记在任务上，品牌通过不等于已发布。
 export const PUBLISH_STATES=['待排期','已排期','已发布'];
@@ -52,4 +54,4 @@ export const dueLabel=n=>n==null?'':n<0?`已过档期 ${-n} 天`:n===0?'今天�
 // 品牌反馈清单里还没处理的条目（不含待确认的草稿）。
 export const openFeedback=docs=>docs.reduce((a,d)=>a+(d.fbItems||[]).filter(x=>x.status==='open').length,0);
 // 列表筛选：状态（等谁）、平台、形式、当前阶段、档期临近；任一条件为空表示不限。
-export function matchFilter(item,pr,f,today=new Date()){if(f.wait&&waitingOn(item,pr)!==f.wait)return false;if(f.platform&&item.platform!==f.platform)return false;if(f.kind&&item.kind!==f.kind)return false;if(f.stage&&pr.current!==f.stage)return false;if(f.due){const n=daysToPublish(item,today);if(n==null||n>Number(f.due))return false;}return true;}
+export function matchFilter(item,pr,f,today=new Date()){if(f.wait&&waitingOn(item,pr)!==f.wait)return false;if(f.platform&&item.platform!==f.platform)return false;if(f.kind&&item.kind!==f.kind)return false;if(f.type&&(item.type||'')!==f.type)return false;if(f.stage&&pr.current!==f.stage)return false;if(f.due){const n=daysToPublish(item,today);if(n==null||n>Number(f.due))return false;}return true;}
