@@ -1,13 +1,13 @@
 // 本机 AI 连接：网页长轮询本机连接器（zhigao-connector.mjs），执行 AI 客户端发来的工具调用。
 // 用户点“连接”后才开始访问本机；同一浏览器只允许一个标签页连接，避免两份内存状态互相覆盖。
 import {createReviewService} from './review-batch.js';
-import {libraryText,fbPrompt,parseFbAI} from './brand.js';
+import {libraryText,effectiveRules,currentRulesText,fbPrompt,parseFbAI} from './brand.js';
 import {reviewStagesFor,reviewStatus,pendingCount,flowOf,FLOW_STATES,itemProgress,WAIT,waitingOn} from './model.js';
 
 export const AGENT_PORT=47821;
 const HUB=`http://127.0.0.1:${AGENT_PORT}`;
 const KEY='zhigao-agent-v1';
-export const TOOL_LABELS={zhigao_extract_feishu:'提炼执行表',zhigao_prepare_feishu_sync:'准备同步核对',zhigao_create_review_batch:'建立审稿批次',zhigao_get_review_batch:'查询审稿批次',zhigao_fail_review:'记录审稿失败',zhigao_status:'查看状态',zhigao_list_tasks:'列出任务',zhigao_get_project:'读取项目规则',zhigao_open_task:'打开稿件',zhigao_get_review_brief:'读取审稿指令',zhigao_submit_review:'提交审稿建议',zhigao_get_feedback_brief:'读取品牌反馈',zhigao_submit_feedback_items:'提交反馈条目'};
+export const TOOL_LABELS={zhigao_publish_feishu_extraction:'生成飞书精炼表',zhigao_extract_feishu:'提炼执行表',zhigao_prepare_feishu_sync:'准备同步核对',zhigao_create_review_batch:'建立审稿批次',zhigao_get_review_batch:'查询审稿批次',zhigao_fail_review:'记录审稿失败',zhigao_status:'查看状态',zhigao_list_tasks:'列出任务',zhigao_get_project:'读取项目规则',zhigao_open_task:'打开稿件',zhigao_get_review_brief:'读取审稿指令',zhigao_submit_review:'提交审稿建议',zhigao_get_feedback_brief:'读取品牌反馈',zhigao_submit_feedback_items:'提交反馈条目'};
 const WRITES=new Set(['zhigao_submit_review','zhigao_submit_feedback_items']);
 
 export const agent={state:'off',clients:[],log:[],version:''};
@@ -22,7 +22,7 @@ async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST
 
 // 飞书读取可由 MCP 发起；写入入口仍仅由网页中的人工确认操作调用。
 export async function feishuLocal(action,data={}){
- if(!['inspect','read','readAll','write','extract','seed'].includes(action))throw Error('未知的飞书操作。');
+ if(!['inspect','read','readAll','write','extract','seed','createRefined'].includes(action))throw Error('未知的飞书操作。');
  let r,p;try{r=await fetch(HUB+'/page/feishu',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({...data,action}),cache:'no-store',credentials:'omit',redirect:'error'});p=await r.json();}
  catch(e){throw Error(e.name==='TypeError'?'本机连接器不可用。请启动已接入知稿 MCP 的 AI 客户端，并允许工作台访问本机。':e.message||'无法连接本机飞书适配器。');}
  if(!r.ok||p?.ok!==true)throw Error(p?.error||`本机飞书适配器返回 ${r.status}`);
@@ -37,9 +37,12 @@ const canDeep=t=>!!t.cells?.length&&t.fmt!=='pdf'&&t.fmt!=='video';
 const docRow=t=>{const f=flowOf(t),st=reviewStatus(t);return{docId:t.id,stage:t.stage,format:t.fmt||'text',filename:t.filename||'',round:f.round,flow:FLOW_STATES[f.state]?.label||f.state,pending:st.label,pendingCount:pendingCount(t),aiSuggestions:t.ai?.changes?.length||0,brandFeedbackRounds:f.feedback.length,canDeepReview:canDeep(t),updated:t.updated||''};};
 const unpack=v=>typeof v==='string'?v:JSON.stringify(v??'');
 const tools={
- async zhigao_extract_feishu({url}){const p=findProject();if(!p||p.status==='ended')throw Error('请选择正在执行的品牌项目。');const projectId=p.id;
+ async zhigao_extract_feishu({url,createDocument=true,title}={}){const p=findProject();if(!p||p.status==='ended')throw Error('请选择正在执行的品牌项目。');url=url||p.feishu?.source?.url;if(!url)throw Error('请在工作台保存原始表链接，或传入 url。');const projectId=p.id;
   const data=await feishuLocal('extract',{url});const draft=await ctx.saveExtraction(projectId,data);
-  return {ok:true,draftId:draft.id,project:p.name,rows:draft.entries.length,entries:draft.entries,warnings:draft.warnings,location:'工作台 → 飞书同步 → 执行提炼待确认',message:'提炼结果已保存到待确认区；尚未新建任务或写入飞书。请用户核对编辑并确认。'};},
+  const result={ok:true,draftId:draft.id,project:p.name,rows:draft.entries.length,entries:draft.entries,warnings:draft.warnings,location:'工作台 → 飞书同步 → 执行提炼'};
+  if(createDocument){try{result.document=await ctx.publishExtraction(draft.id,title);result.message='精炼飞书表已生成并回读核验，链接和表内数据已显示在工作台。';}catch(e){result.ok=false;result.message='提炼已保存，但飞书文档尚未验收：'+e.message;}}
+  else result.message='提炼草稿已保存；尚未新建文档或写入飞书。';return result;},
+ async zhigao_publish_feishu_extraction({draftId,title}){return {ok:true,document:await ctx.publishExtraction(draftId,title)};},
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
   return{connected:true,currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
@@ -49,7 +52,7 @@ const tools={
   return items.filter(it=>all||it.projectId===p.id).map(it=>{const docs=tasks.filter(t=>t.itemId===it.id),pr=itemProgress(it,docs);return{taskId:it.id,project:pn(it.projectId),author:it.author,platform:it.platform,kind:it.kind,title:it.title,currentStage:pr.current,status:pr.label,waitingOn:WAIT[waitingOn(it,pr)],waitKey:waitingOn(it,pr),publishDate:it.publish?.date||'',documents:docs.sort((a,b)=>reviewStagesFor(it.kind).indexOf(a.stage)-reviewStagesFor(it.kind).indexOf(b.stage)).map(docRow)};})
    .filter(r=>(!wait||r.waitKey===wait)&&(!q||[r.author,r.title,r.platform].join(' ').toLowerCase().includes(q)));},
  zhigao_get_project({project}={}){const p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
-  return{id:p.id,name:p.name,ended:p.status==='ended',notes:p.notes||'',rules:(p.rules||[]).filter(r=>r.enabled).map(r=>({title:r.title,description:r.description})),library:libraryText(p)};},
+  return{id:p.id,name:p.name,ended:p.status==='ended',notes:p.notes||'',rules:effectiveRules(p),precedence:'最新生效口径优先于旧资料；仅适用于当前品牌项目',currentRules:currentRulesText(p),library:libraryText(p)};},
  async zhigao_open_task({docId}){docOf(docId);await ctx.open(docId);return{ok:true,message:'已在用户的工作台上打开这份稿件。'};},
  zhigao_create_review_batch:args=>reviewService.zhigao_create_review_batch(args),
  zhigao_get_review_batch:args=>reviewService.zhigao_get_review_batch(args),

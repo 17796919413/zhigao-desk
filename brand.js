@@ -2,11 +2,19 @@
 const NL=String.fromCharCode(10);
 export const DOC_KINDS=['Brief','产品资料','口径与禁用词','品牌反馈汇总','其他'];
 export const FB_STATES={draft:['待确认','amber'],open:['待处理','red'],done:['已处理','dark'],dropped:['不采纳','gray']};
-// 资料引用进 AI 指令时控制总长度，避免把整本资料塞进去；超出部分截断并注明。
-export const LIB_LIMIT=12000;
+// 审稿默认引用完整启用资料；调用者仅在明确需要预览摘要时传入 limit。
+export const LIB_LIMIT=Infinity;
+// 替代关系在当前品牌内解析；旧版本保留用于追溯，不再作为审稿依据。
+export function effectiveRules(p){
+ const rules=p?.rules||[],blocked=new Set();
+ function block(id,seen=new Set()){if(seen.has(id))return;seen.add(id);blocked.add(id);const r=rules.find(x=>x.id===id);for(const old of r?.supersedes||[])block(old,seen);}
+ for(const r of rules.filter(r=>r.enabled))for(const id of r.supersedes||[])block(id);
+ return rules.filter(r=>r.enabled&&!blocked.has(r.id)).sort((a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')));
+}
+export function currentRulesText(p){return effectiveRules(p).map(r=>`- ${r.title}（${r.updated||'既有口径'}）：${r.description||''}${r.find?`；查找「${r.find}」${r.action==='replace'?`，改为「${r.replace||'删除'}」`:'，提醒核对'}`:''}${r.source?`；来源：${r.source}`:''}`).join(NL);}
 export function libraryText(p,{limit=LIB_LIMIT}={}){
  const on=(p.library||[]).filter(d=>d.active!==false&&String(d.text||'').trim());
- const rules=(p.rules||[]).filter(r=>r.enabled&&r.type==='custom'&&r.fromFeedback);
+ const rules=[];
  const parts=on.map(d=>`【${d.kind}｜${d.title}｜${d.updated?.slice(0,10)||''}】${NL}${String(d.text).trim()}`);
  if(rules.length)parts.push('【来自品牌反馈的项目要求】'+NL+rules.map(r=>`- ${r.title}：${r.description}`).join(NL));
  let out=parts.join(NL+NL);if(out.length>limit)out=out.slice(0,limit)+NL+`（资料过长，已截断；完整内容见工作台品牌资料库）`;
@@ -33,8 +41,8 @@ export function docFeedbackText(t,{limit=DOC_FB_LIMIT}={}){
 }
 // 审稿依据 = 项目笔记 + 品牌资料库（项目全局） + 这份稿件的品牌方反馈。网页“复制指令”和本机 AI 连接共用这一份。
 export function reviewNotes(t,p){
- const lib=p?libraryText(p):'',fb=docFeedbackText(t);
- return[t?.notes,lib&&('【品牌资料库（当前启用）】'+NL+lib),fb&&('【这份稿件的品牌方反馈（只适用于这份稿件）】'+NL+fb)].filter(Boolean).join(NL+NL);
+ const lib=p?libraryText(p):'',fb=docFeedbackText(t),rules=p?currentRulesText(p):'';
+ return['【依据优先级】仅适用当前品牌项目。最新生效口径高于 Brief、产品资料及原始笔记；与旧资料冲突的部分按新口径执行，其余资料仍适用。已替代或停用的规则不得继续执行。本稿反馈只适用于本稿；与全局最新口径冲突时列出冲突请人核对。未明确替代且互相冲突的规则不要自行猜测。',rules&&('【最新生效口径（本项目全局，优先执行）】'+NL+rules),p?.notes||t?.notes,lib&&('【品牌资料库（当前启用，完整原文）】'+NL+lib),fb&&('【这份稿件的品牌方反馈（只适用于这份稿件）】'+NL+fb)].filter(Boolean).join(NL+NL);
 }
 export function fbPrompt(raw,p,ctx){
  return `你是一位品牌内容审稿助理。下面是品牌方对一份达人稿件的反馈原话。请把它整理成逐条、可执行的修改清单。

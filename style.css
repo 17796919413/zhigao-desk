@@ -16,3 +16,12 @@
 .modal:has([data-ex-field]) .task-table .input{min-width:110px;width:100%}
 .modal:has([data-ex-field]) .fs-list{overflow-x:auto}
 
+
+/* 品牌资料与口径：保留原有黑白界面，按两类审稿依据组织。 */
+.brand-policy-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px}.brand-policy-layout>div,.brand-policy-layout>aside{min-width:0}.brand-policy-layout .panel{margin-bottom:24px}.brand-policy-layout .panel-heading{gap:16px;flex-wrap:wrap}.policy-intro{color:#555;line-height:1.75;border-bottom:1px solid var(--border,#e5e5e5)}.policy-history{margin-top:10px}.policy-history p{white-space:pre-wrap}.project-switcher>select{max-width:380px}.brand-policy-layout summary{cursor:pointer}.brand-policy-layout .rule-copy p{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:1100px){.brand-policy-layout{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.brand-policy-layout .rule-row,.brand-policy-layout .lib-row{gap:10px;padding:16px}.brand-policy-layout .panel-heading{padding:16px}.project-switcher>select{max-width:100%}}
+
+.refined-table{max-height:560px;overflow:auto}.refined-table .task-table{min-width:1000px;table-layout:auto}.refined-table th{position:sticky;top:0;background:#f5f5f5;z-index:1;white-space:nowrap}.refined-table td{min-width:100px;max-width:300px;overflow-wrap:anywhere}.panel-heading #fs-preview-sheet{width:auto;max-width:100%}
+
+@media(max-width:600px){.content:has(.brand-policy-layout) .page-title{align-items:flex-start;flex-direction:column}.content:has(.brand-policy-layout) .page-title h1{width:100%}}

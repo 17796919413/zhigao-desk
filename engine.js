@@ -1,3 +1,4 @@
+import {effectiveRules} from './brand.js';
 export const VERSION = '2026-11-02';
 export const DEFAULT_NOTES = `【修改稿件注意事项】
 尽量沿用原稿，只修改台词中的硬性错误；仅新增或替换的字标红。不要把修改逻辑写进文件。另存新文件，不能覆盖原文件。命名：【达人名称】-视频/图文-大纲/脚本。保证基础语句通顺。
@@ -35,7 +36,8 @@ export function diffChars(before,after){
 export function markedHTML(a,b,showDeletes=false){return diffChars(a,b).map(x=>x.type==='delete'?(showDeletes?`<del class="deleted">${esc(x.text)}</del>`:''):x.type==='add'?`<span class="added">${esc(x.text)}</span>`:esc(x.text)).join('');}
 function inHashtag(text,index){const left=text.slice(0,index);return /#[^\s#]*$/.test(left);}
 export function scan(cells,rules,platform='抖音'){
- const findings=[];const enabled=id=>rules.some(r=>r.id===id&&r.enabled);
+ rules=effectiveRules({rules});
+ const findings=[];const enabled=id=>rules.some(r=>r.id===id&&r.enabled&&r.type!=='custom');
  const push=(cell,rule,title,start,end,replacement,reason,severity='fix')=>findings.push({id:`${cell.id}:${rule}:${start}`,cellId:cell.id,rule,title,start,end,original:cell.original.slice(start,end),replacement,reason,severity,status:'pending'});
  const match=(cell,rule,title,re,replacer,reason,guard=()=>true)=>{for(const m of cell.original.matchAll(re)){if(!guard(m))continue;const replacement=replacer(m);if(replacement!==m[0])push(cell,rule,title,m.index,m.index+m[0].length,replacement,reason);}};
  for(const c of cells){

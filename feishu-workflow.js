@@ -7,7 +7,7 @@ export function validateExecutionRows(rows){
  if(!Array.isArray(rows)||!rows.length||rows.length>300)throw Error('一次须确认 1 到 300 条执行记录。');
  const seen=new Set();return rows.map(e=>{
   const row={};for(const k of EXEC_FIELDS){const s=String(e[k]??'').trim();if(s.length>500)throw Error(`${EXEC_LABELS[k]}过长，请人工核对。`);row[k]=s;}
-  if(!row.author||!row.product||!['抖音','小红书','其他'].includes(row.platform)||!['视频','图文'].includes(row.kind))throw Error('请补齐达人、产品、平台和内容形式后确认。');
+  if(!row.author||!['抖音','小红书','其他'].includes(row.platform)||!['视频','图文'].includes(row.kind))throw Error('请补齐达人、平台和内容形式后确认。');
   if(seen.has(executionKey(row)))throw Error('所选记录中有相同达人、平台和产品，请去重或区分产品后确认。');seen.add(executionKey(row));
   return {...row,group:String(e.group||'执行部分').slice(0,120),source:e.source?{sheetId:String(e.source.sheetId||''),row:Number(e.source.row)||0}:null};
  });
@@ -20,4 +20,4 @@ export function seedColumns(headers){
  if(!['author','platform','product'].every(f=>seen.has(f)))throw Error('精炼表必须包含达人、发布平台和合作产品列。');return fields;
 }
 export function seedRows(headers,entries){const fs=seedColumns(headers);return entries.map(e=>fs.map(f=>f==='script'&&e.kind==='图文'?'/':EXEC_FIELDS.includes(f)?String(e[f]||''):''));}
-export function extractionDefaults(e){const ps=platformsOf(e.platform);return {...e,platform:ps.length===1?ps[0]:'',kind:kindOf(e.kind),on:!!e.author&&!!e.product&&ps.length===1&&!!kindOf(e.kind)};}
+export function extractionDefaults(e){const ps=platformsOf(e.platform);return {...e,platform:ps.length===1?ps[0]:'',kind:kindOf(e.kind),on:!!e.author&&ps.length===1&&!!kindOf(e.kind)};}

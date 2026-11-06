@@ -1,6 +1,6 @@
 // MCP 审稿与批次：只提交待确认结果；不采纳、不推进品牌状态、不写飞书。
 import {aiPrompt,parseAI,fingerprint} from './engine.js';
-import {reviewNotes} from './brand.js';
+import {reviewNotes,effectiveRules} from './brand.js';
 import {flowOf} from './model.js';
 
 export const REVIEW_LEASE_MS=15*60*1000;
@@ -20,13 +20,13 @@ export function batchSummary(b){
 }
 
 export function createReviewService(ctx){
- const sessionId=uid(),S=()=>ctx.state();
+ const sessionId=uid(),S=()=>ctx.state(),singleBasis=new Map();
  const project=id=>{const p=S().settings.projects.find(p=>p.id===id);if(!p)throw Error('稿件所属项目不存在。');return p;};
  const doc=id=>{const t=S().tasks.find(t=>t.id===id);if(!t)throw Error('找不到稿件，请先列出任务取得 docId。');return t;};
  const batch=id=>{const b=(S().batches||[]).find(b=>b.id===id);if(!b)throw Error('找不到审稿批次。');return b;};
  const entry=(b,id)=>{const e=b.entries.find(e=>e.docId===id);if(!e)throw Error('稿件不在这个批次中。');return e;};
  const basis=t=>{const p=project(t.projectId);return JSON.stringify({projectId:p.id,round:flowOf(t).round,stage:t.stage,platform:t.platform,kind:t.kind,
-  notes:reviewNotes({...t,notes:p.notes||''},p),rules:(p.rules||[]).filter(r=>r.enabled),cells:t.cells.map(c=>({id:c.id,current:c.current,note:c.note||''}))});};
+  notes:reviewNotes({...t,notes:p.notes||''},p),rules:effectiveRules(p),cells:t.cells.map(c=>({id:c.id,current:c.current,note:c.note||''}))});};
  const checkDoc=t=>{const p=project(t.projectId);if(p.status==='ended')throw Error('项目已结束，不接受 AI 审稿。');
   if(!canDeepReview(t))throw Error('这份稿件不支持 AI 深审（PDF、视频或未选审稿范围）。');};
  async function persist(b){b.updated=now();await ctx.saveBatch(b);return b;}
@@ -88,8 +88,8 @@ export function createReviewService(ctx){
     }
     reviewToken=uid();Object.assign(e,{status:'reviewing',reviewToken,sessionId,startedAt:now(),reason:'',basis:basis(t)});await persist(b);
    }
-   return {docId:t.id,...(batchId?{batchId,reviewToken}:{}),instruction:aiPrompt(t,reviewNotes({...t,notes:p.notes||''},p)+
-    ((p.rules||[]).some(r=>r.enabled)?'\n\n【项目当前启用规则】\n'+(p.rules||[]).filter(r=>r.enabled).map(r=>`${r.title}：${r.description||''}`).join('\n'):'')),
+   if(!batchId)singleBasis.set(t.id,basis(t));
+   return {docId:t.id,...(batchId?{batchId,reviewToken}:{}),instruction:aiPrompt(t,reviewNotes({...t,notes:p.notes||''},p)),
     howToSubmit:'按 instruction 审稿，调用 zhigao_submit_review({docId,result'+(batchId?',batchId,reviewToken':'')+'})；只提交待确认建议。客户端无法完成时调用 zhigao_fail_review 记录原因，然后继续其他稿件。'};
   },
   async zhigao_submit_review({docId,result,batchId,reviewToken,rereview=false}){
@@ -105,6 +105,7 @@ export function createReviewService(ctx){
    try{
     if(t.ai&&rereview!==true)throw Error('已有 AI 审稿结果；明确要求重审时才可传 rereview:true，旧结果将保留在历史中。');
     if(e&&(flowOf(t).state!=='review'||basis(t)!==e.basis))throw Error('稿件或审稿依据已变化，请重新获取指令。');
+    if(!batchId&&singleBasis.has(t.id)&&singleBasis.get(t.id)!==basis(t))throw Error('项目资料或最新口径已变化，请重新获取审稿指令。');
     raw=resultText(result);const ai={...parseAI(raw,t),at:now(),submissionResult:raw,...(batchId?{batchId,reviewToken}:{})};
     const updated={...t,ai,updated:now()};
     if(t.ai)updated.aiHistory=[...(t.aiHistory||[]),copy(t.ai)];
