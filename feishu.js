@@ -55,7 +55,7 @@ export const SYNC_FIELDS=['outline','script','draft','date','publish','feedback'
 // 工作台这一侧“应该是什么”：✅ 只来自人工记录的品牌通过；图文没有脚本记为“/”。
 export function itemValues(item,docs){
  const v={};
- for(const [f,stage] of Object.entries(STAGE_FIELD)){if(!reviewStagesFor(item.kind).includes(stage)){v[f]='/';continue;}const d=docs.filter(x=>x.stage===stage).sort((a,b)=>String(b.updated).localeCompare(String(a.updated)))[0];v[f]=d&&flowOf(d).state==='passed'?'✅':'';}
+ for(const [f,stage] of Object.entries(STAGE_FIELD)){if(!reviewStagesFor(item.kind).includes(stage)){v[f]='/';continue;}const d=docs.filter(x=>x.stage===stage).sort((a,b)=>String(b.updated).localeCompare(String(a.updated)))[0];v[f]=d&&flowOf(d).state==='passed'?'✅':d?.ai?'AI已审 · '+d.ai.changes.length+'处修改 · 待复核':'';}
  const pb=item.publish||{};v.date=pb.date||'';v.publish=pb.status==='已发布'?'✅':'';
  const fb=docs.flatMap(d=>(d.fbItems||[]).filter(x=>x.status==='done'&&String(x.text||'').trim()).map(x=>({...x,stage:d.stage}))).sort((a,b)=>String(a.at).localeCompare(String(b.at)));
  v.feedback=fb.map(x=>`【${x.stage}】${x.text}`).join('；');v.feedbackText=fb.map(x=>x.text).join('；');
@@ -75,7 +75,7 @@ export function buildPlan(list,docsOf,sheets){
  for(const it of list){const b=it.feishu;if(!b)continue;const s=sheets.find(x=>x.id===b.sheetId);if(!s){entries.push({it,error:'子表快照已删除，请重新绑定'});continue;}const loc=locate(s,b);if(loc.row==null){entries.push({it,sheet:s,error:loc.why==='ambiguous'?'快照里有多行同名记录，请重新绑定':'在最新快照里找不到这一行（可能改了名或删除了），请重新绑定'});continue;}const v=itemValues(it,docsOf(it)),r=s.rows[loc.row],cells=[];for(const f of SYNC_FIELDS){if(s.map[f]<0)continue;const feishu=r[s.map[f]]||'',c=compareCell(f,feishu,v[f],f==='feedback'?v.feedbackText:'');cells.push({f,header:s.headers[s.map[f]],feishu,ours:v[f],...c});}entries.push({it,sheet:s,row:loc.row,cells});}
  // 只有连接器提供的最近写入历史与在线值完全一致，反馈格才允许进入人工确认的覆盖计划。
  for(const e of entries)if(e.cells&&e.sheet.live)for(const c of e.cells){
-  if(c.f!=='feedback'||c.status!=='conflict'||!c.ours)continue;
+  if(!['feedback','outline','script','draft'].includes(c.f)||c.status!=='conflict'||!c.ours)continue;
   const history=(e.sheet.writeHistory||[]).findLast(h=>h.key===rowKey(e.sheet,e.row)&&h.header===c.header);
   if(history&&history.value===c.feishu){c.status='update';c.expected=c.feishu;c.note='更新本机上次写入的反馈；写前还会回读核对';}
  }

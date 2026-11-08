@@ -15,7 +15,7 @@ export function batchSummary(b){
  const counts=Object.fromEntries(Object.keys(BATCH_STATES).map(s=>[s,b.entries.filter(e=>e.status===s).length]));
  return {...copy(b),counts,finished:!b.entries.some(e=>['queued','reviewing'].includes(e.status)),
   success:counts.pending,failed:counts.failed,interrupted:counts.interrupted,skipped:counts.skipped,
-  location:'工作台首页 → AI 审稿批次；点击稿件查看改前改后',
+  location:'审稿工作台 → 稿件列表 → 审稿详情',
   next:'逐份调用 zhigao_get_review_brief({docId,batchId})，提交时带回 reviewToken。失败后继续其他排队稿件；重试失败或中断稿件时取指令传 retry:true。结束用 zhigao_get_review_batch 核对完成、失败、中断和跳过数。'};
 }
 
@@ -58,10 +58,14 @@ export function createReviewService(ctx){
    const docs=docIds?[...new Set(docIds)].map(doc):S().tasks.filter(t=>t.projectId===p.id&&!t.ai&&flowOf(t).state==='review');
    if(docs.some(t=>t.projectId!==p.id))throw Error('只能为当前选中项目建立批次，不能跨品牌。');
    const existing=(S().batches||[]).find(b=>b.projectId===p.id&&b.entries.some(unfinished)&&
-    (!docIds||docs.every(t=>b.entries.some(e=>e.docId===t.id&&e.round===flowOf(t).round))));
+    docs.every(t=>b.entries.some(e=>e.docId===t.id&&e.round===flowOf(t).round))&&b.entries.filter(unfinished).every(e=>docs.some(t=>t.id===e.docId&&flowOf(t).round===e.round)));
    if(existing)return {...batchSummary(existing),reused:true};
    if((S().batches||[]).some(b=>b.projectId===p.id&&b.entries.some(e=>unfinished(e)&&docs.some(t=>t.id===e.docId&&flowOf(t).round===e.round))))
-    throw Error('所选稿件已在其他未结束批次中，请先查询并完成该批次。');
+    {
+    const overlaps=(S().batches||[]).filter(b=>b.projectId===p.id&&b.entries.some(e=>unfinished(e)&&docs.some(t=>t.id===e.docId&&flowOf(t).round===e.round)));
+    if(overlaps.some(b=>b.entries.some(e=>e.status==='reviewing')))throw Error('部分稿件正在审稿，请等本批完成后再加入新稿。');
+    for(const old of overlaps){const prior=copy(old);for(const e of prior.entries)if(unfinished(e)&&docs.some(t=>t.id===e.docId)){e.status='skipped';e.reason='已并入新的上传批次。';e.reviewToken=null;}await persist(prior);}
+   }
    const b={id:uid(),projectId:p.id,projectName:p.name,created:now(),updated:now(),entries:docs.map(t=>{
     const reason=t.ai?'已有 AI 审稿结果，不重复处理。':flowOf(t).state!=='review'?'当前不是待审稿件。':!canDeepReview(t)?'PDF、视频或未选审稿范围，不支持 AI 深审。':'';
     return {docId:t.id,author:t.author||'',stage:t.stage,round:flowOf(t).round,snapshot:canDeepReview(t)?fingerprint(t.cells):null,
@@ -98,6 +102,7 @@ export function createReviewService(ctx){
     if(b.projectId!==t.projectId)throw Error('稿件已不属于这个批次。');
     if(e.status==='pending'&&reviewToken===e.reviewToken&&t.ai?.reviewToken===reviewToken){
      if(resultText(result)!==t.ai.submissionResult)throw Error('同一审稿凭据不能提交不同结果。');
+     if(['failed','waiting','saving'].includes(t.ai.archive?.state)&&!t.ai.saved?.path)try{await ctx.saveAIDraft?.(t);}catch{}
      return {ok:true,duplicate:true,imported:t.ai.changes.length,warnings:t.ai.warnings.length,savedPath:t.ai.saved?.path||null,message:'这份结果已保存，未重复导入或另存。'};
     }
     if(e.status!=='reviewing'||!reviewToken||reviewToken!==e.reviewToken)throw Error('审稿凭据已失效，请重新获取指令。');
@@ -116,7 +121,7 @@ export function createReviewService(ctx){
    const saved=doc(docId);let savedPath=null,archiveError=null;
    try{savedPath=await ctx.saveAIDraft?.(saved)||null;}catch(error){archiveError=String(error.message||error);}
    return {ok:true,imported:saved.ai.changes.length,warnings:saved.ai.warnings.length,savedPath,archiveError,
-    message:`已保存 ${saved.ai.changes.length} 条待确认建议、${saved.ai.warnings.length} 条提醒。`+(savedPath?`AI修改版（未确认）已另存：${savedPath}`:'未自动另存本地文件，可在工作台授权目录后另存。')};
+    message:`已保存 ${saved.ai.changes.length} 条待确认建议、${saved.ai.warnings.length} 条提醒。`+(savedPath?`AI修改版（未确认）已另存：${savedPath}`:'归档尚未完成，请查看工作台稿件旁的归档状态。')};
   }
  };
 }

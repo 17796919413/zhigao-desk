@@ -16,7 +16,7 @@ import readline from 'node:readline';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
-const VERSION = '1.5.1';
+const VERSION = '1.6.0';
 const PORT = Number(process.env.ZHIGAO_PORT) || 47821;
 const HOME = path.join(os.homedir(), '.zhigao');
 const SELF = fileURLToPath(import.meta.url);
@@ -201,7 +201,7 @@ async function writeFeishu(url, sheetId, writes) {
       }
       const current = fresh.get(w.column);
       const prior=rememberedWrite(book,sheetId,w),occupied=cellHasValue(current);
-      const overwrite=occupied&&w.field==='feedback'&&prior&&typeof current.value==='string'&&current.value===prior.value&&!current.formula&&w.expected===prior.value;
+      const overwrite=occupied&&['feedback','outline','script','draft'].includes(w.field)&&prior&&typeof current.value==='string'&&current.value===prior.value&&!current.formula&&w.expected===prior.value;
       if(occupied&&!overwrite)throw Error('写入前目标格已被填写或已被他人修改，已拒绝覆盖。');
       if(overwrite&&typeof w.expected!=='string')throw Error('缺少人工确认时的旧值。');
       // 不允许持久化历史失败后再开始写入；成功回读后才记录归属。

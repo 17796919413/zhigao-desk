@@ -100,3 +100,5 @@ export async function startAgent(){
  if(got===false&&running){set('other-tab');try{await navigator.locks.request('zhigao-agent',{signal:lockAbort.signal},()=>run());}catch{running=false;}}
 }
 export function stopAgent(){remember(false);lockAbort?.abort();abort?.abort();running=false;set('off',{clients:[]});}
+
+export async function createUIReviewBatch(docIds){if(!reviewService)throw Error("工作台尚未就绪，请稍后重试。");return reviewService.zhigao_create_review_batch({docIds});}
