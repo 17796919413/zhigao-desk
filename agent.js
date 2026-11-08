@@ -33,7 +33,7 @@ export async function feishuLocal(action,data={}){
 const S=()=>ctx.state();
 const findProject=q=>{const ps=S().settings.projects;if(!q)return ps.find(p=>p.id===S().settings.selected)||ps[0];const s=String(q).trim();return ps.find(p=>p.id===s)||ps.find(p=>p.name===s)||ps.find(p=>p.name.includes(s))||null;};
 const docOf=id=>{const t=S().tasks.find(t=>t.id===id);if(!t)throw Error(`找不到稿件 ${id}，请先调用 zhigao_list_tasks 取得 docId。`);return t;};
-const canDeep=t=>!!t.cells?.length&&t.fmt!=='pdf'&&t.fmt!=='video';
+const canDeep=t=>!t.reviewReadError&&!!t.cells?.length&&t.fmt!=='pdf'&&t.fmt!=='video';
 const docRow=t=>{const f=flowOf(t),st=reviewStatus(t);return{docId:t.id,stage:t.stage,format:t.fmt||'text',filename:t.filename||'',round:f.round,flow:FLOW_STATES[f.state]?.label||f.state,pending:st.label,pendingCount:pendingCount(t),aiSuggestions:t.ai?.changes?.length||0,brandFeedbackRounds:f.feedback.length,canDeepReview:canDeep(t),updated:t.updated||''};};
 const unpack=v=>typeof v==='string'?v:JSON.stringify(v??'');
 const tools={

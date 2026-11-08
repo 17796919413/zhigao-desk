@@ -5,7 +5,7 @@ import {flowOf} from './model.js';
 
 export const REVIEW_LEASE_MS=15*60*1000;
 export const BATCH_STATES={queued:'排队中',reviewing:'审稿中',pending:'待确认',failed:'失败',interrupted:'已中断',skipped:'已跳过'};
-export const canDeepReview=t=>!!t.cells?.length&&!['pdf','video'].includes(t.fmt);
+export const canDeepReview=t=>!t.reviewReadError&&!!t.cells?.length&&!['pdf','video'].includes(t.fmt);
 const unfinished=e=>['queued','reviewing','failed','interrupted'].includes(e.status);
 const now=()=>new Date().toISOString();
 const uid=()=>crypto.randomUUID();
@@ -28,7 +28,7 @@ export function createReviewService(ctx){
  const basis=t=>{const p=project(t.projectId);return JSON.stringify({projectId:p.id,round:flowOf(t).round,stage:t.stage,platform:t.platform,kind:t.kind,
   notes:reviewNotes({...t,notes:p.notes||''},p),rules:effectiveRules(p),cells:t.cells.map(c=>({id:c.id,current:c.current,note:c.note||''}))});};
  const checkDoc=t=>{const p=project(t.projectId);if(p.status==='ended')throw Error('项目已结束，不接受 AI 审稿。');
-  if(!canDeepReview(t))throw Error('这份稿件不支持 AI 深审（PDF、视频或未选审稿范围）。');};
+  if(!canDeepReview(t))throw Error('这份稿件不支持 AI 审稿（PDF、视频或没有可读取文字）。');};
  async function persist(b){b.updated=now();await ctx.saveBatch(b);return b;}
  async function recover(){
   for(const old of [...(S().batches||[])]){
@@ -36,7 +36,7 @@ export function createReviewService(ctx){
    for(const e of b.entries){
     if(!unfinished(e))continue;
     const t=S().tasks.find(t=>t.id===e.docId),p=S().settings.projects.find(p=>p.id===b.projectId);
-    if(!t||!p||p.status==='ended'||t.projectId!==b.projectId||t.ai||flowOf(t).state!=='review'||flowOf(t).round!==e.round||!canDeepReview(t)||fingerprint(t.cells)!==e.snapshot){
+    if(!t||!p||p.status==='ended'||t.projectId!==b.projectId||(t.ai&&!t.fullReviewPending)||flowOf(t).state!=='review'||flowOf(t).round!==e.round||!canDeepReview(t)||fingerprint(t.cells)!==e.snapshot){
      Object.assign(e,{status:'skipped',reason:'稿件或项目已移除、已审阅、已修改或进入其他轮次／状态，请另建批次。',reviewToken:null});changed=true;
     }else if(e.status==='reviewing'&&(e.sessionId!==sessionId||Date.now()-Date.parse(e.startedAt)>=REVIEW_LEASE_MS)){
      Object.assign(e,{status:'interrupted',reason:e.sessionId!==sessionId?'页面会话已变化，请重新获取指令后续审。':'审稿超过 15 分钟未提交，请重新获取指令后续审。',reviewToken:null});changed=true;
@@ -55,7 +55,7 @@ export function createReviewService(ctx){
   async zhigao_create_review_batch({docIds}={}){
    await recover();const p=project(S().settings.selected);if(p.status==='ended')throw Error('当前项目已结束，请选择正在执行的品牌项目。');
    if(docIds!==undefined&&(!Array.isArray(docIds)||!docIds.length||docIds.some(id=>typeof id!=='string')))throw Error('docIds 须为非空稿件 ID 数组。');
-   const docs=docIds?[...new Set(docIds)].map(doc):S().tasks.filter(t=>t.projectId===p.id&&!t.ai&&flowOf(t).state==='review');
+   const docs=docIds?[...new Set(docIds)].map(doc):S().tasks.filter(t=>t.projectId===p.id&&(!t.ai||t.fullReviewPending)&&flowOf(t).state==='review');
    if(docs.some(t=>t.projectId!==p.id))throw Error('只能为当前选中项目建立批次，不能跨品牌。');
    const existing=(S().batches||[]).find(b=>b.projectId===p.id&&b.entries.some(unfinished)&&
     docs.every(t=>b.entries.some(e=>e.docId===t.id&&e.round===flowOf(t).round))&&b.entries.filter(unfinished).every(e=>docs.some(t=>t.id===e.docId&&flowOf(t).round===e.round)));
@@ -67,7 +67,7 @@ export function createReviewService(ctx){
     for(const old of overlaps){const prior=copy(old);for(const e of prior.entries)if(unfinished(e)&&docs.some(t=>t.id===e.docId)){e.status='skipped';e.reason='已并入新的上传批次。';e.reviewToken=null;}await persist(prior);}
    }
    const b={id:uid(),projectId:p.id,projectName:p.name,created:now(),updated:now(),entries:docs.map(t=>{
-    const reason=t.ai?'已有 AI 审稿结果，不重复处理。':flowOf(t).state!=='review'?'当前不是待审稿件。':!canDeepReview(t)?'PDF、视频或未选审稿范围，不支持 AI 深审。':'';
+    const reason=t.ai&&!t.fullReviewPending?'已有 AI 审稿结果，不重复处理。':flowOf(t).state!=='review'?'当前不是待审稿件。':!canDeepReview(t)?'PDF、视频或没有可读取文字，不支持 AI 审稿。':'';
     return {docId:t.id,author:t.author||'',stage:t.stage,round:flowOf(t).round,snapshot:canDeepReview(t)?fingerprint(t.cells):null,
      status:reason?'skipped':'queued',reason};
    })};
@@ -87,7 +87,7 @@ export function createReviewService(ctx){
     if(e.status==='reviewing')throw Error('这份稿件正在审稿，请勿重复领取；超时后可续审。');
     if(!['queued','failed','interrupted'].includes(e.status))throw Error(e.reason||'这份稿件已完成或已跳过。');
     if(e.status!=='queued'&&retry!==true)throw Error('重新审查失败或中断稿件需 retry:true。');
-    if(t.ai||flowOf(t).state!=='review'||flowOf(t).round!==e.round||fingerprint(t.cells)!==e.snapshot){
+    if((t.ai&&!t.fullReviewPending)||flowOf(t).state!=='review'||flowOf(t).round!==e.round||fingerprint(t.cells)!==e.snapshot){
      Object.assign(e,{status:'skipped',reason:'稿件已被审阅、修改或进入其他轮次／状态，请另建批次。'});await persist(b);throw Error(e.reason);
     }
     reviewToken=uid();Object.assign(e,{status:'reviewing',reviewToken,sessionId,startedAt:now(),reason:'',basis:basis(t)});await persist(b);
@@ -108,11 +108,11 @@ export function createReviewService(ctx){
     if(e.status!=='reviewing'||!reviewToken||reviewToken!==e.reviewToken)throw Error('审稿凭据已失效，请重新获取指令。');
    }else if((S().batches||[]).some(b=>b.entries.some(e=>e.docId===docId&&['queued','reviewing'].includes(e.status))))throw Error('这份稿件已进入批次，请携带 batchId 和 reviewToken 提交。');
    try{
-    if(t.ai&&rereview!==true)throw Error('已有 AI 审稿结果；明确要求重审时才可传 rereview:true，旧结果将保留在历史中。');
+    if(t.ai&&!t.fullReviewPending&&rereview!==true)throw Error('已有 AI 审稿结果；明确要求重审时才可传 rereview:true，旧结果将保留在历史中。');
     if(e&&(flowOf(t).state!=='review'||basis(t)!==e.basis))throw Error('稿件或审稿依据已变化，请重新获取指令。');
     if(!batchId&&singleBasis.has(t.id)&&singleBasis.get(t.id)!==basis(t))throw Error('项目资料或最新口径已变化，请重新获取审稿指令。');
     raw=resultText(result);const ai={...parseAI(raw,t),at:now(),submissionResult:raw,...(batchId?{batchId,reviewToken}:{})};
-    const updated={...t,ai,updated:now()};
+    const updated={...t,ai,fullReviewPending:false,updated:now()};
     if(t.ai)updated.aiHistory=[...(t.aiHistory||[]),copy(t.ai)];
     if(e){Object.assign(e,{status:'pending',completedAt:ai.at,reason:'',imported:ai.changes.length,warnings:ai.warnings.length});delete e.basis;b.updated=now();}
     // 唯一完成点：结果和批次一起持久化成功后，才更新内存并返回成功。

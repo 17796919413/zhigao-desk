@@ -33,6 +33,17 @@ export function suggestScope(book){
  const s=book.sheets.find(s=>s.cells.length)||book.sheets[0];return {sheetId:s.id,column:'',start:1,end:Math.max(1,...s.cells.map(c=>c.row))};
 }
 export function scopeCells(book,scope){return(book.sheets.find(s=>s.id===scope.sheetId)?.cells||[]).filter(c=>c.column===scope.column&&c.row>=Number(scope.start)&&c.row<=Number(scope.end)).map(({source,element,...c})=>({...c}));}
+// 审稿默认覆盖整个工作簿；保留稳定的 sheetId!address，供定位和原生导出使用。
+export function workbookCells(book){return book.sheets.flatMap(sheet=>sheet.cells.map(({source,element,...cell})=>({...cell,sheetName:sheet.name})));}
+export function expandWorkbookReview(task,book){
+ const previous=new Map((task.cells||[]).map(c=>[c.id,c])),all=workbookCells(book);
+ const added=all.filter(c=>!previous.has(c.id));
+ const cells=all.map(c=>({...c,...previous.get(c.id),sheetName:c.sheetName}));
+ // 异常旧数据也不静默删除，原有修改及建议继续保留。
+ const ids=new Set(cells.map(c=>c.id));cells.push(...(task.cells||[]).filter(c=>!ids.has(c.id)));
+ return {...task,cells,scope:{mode:'full'},fullReviewPending:!!task.fullReviewPending||!!(added.length&&task.ai),
+  base:{...Object.fromEntries(added.map(c=>[c.id,c.current])),...task.base}};
+}
 function baseProps(book,c,doc){
  const props=doc.createElementNS(NS,'rPr'),root=book.styles?.documentElement;
  const xf=children(first(root,'cellXfs'),'xf')[Number(c.style)],font=children(first(root,'fonts'),'font')[Number(xf?.getAttribute('fontId')||0)];
