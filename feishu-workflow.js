@@ -3,6 +3,15 @@ import {normName,dateISO,kindOf,platformsOf} from './feishu.js';
 export const EXEC_FIELDS=['author','type','product','date','platform','owner','kind','direction'];
 export const EXEC_LABELS={author:'达人',type:'达人类型',product:'合作产品',date:'发布档期',platform:'发布平台',owner:'内容负责人',kind:'内容形式',direction:'细分方向'};
 export const executionKey=e=>[normName(e.author),normName(e.platform),normName(e.product)].join('|');
+export function reviewExecutionRows(original,submitted){
+ if(!Array.isArray(submitted)||submitted.length!==original.length)throw Error('复核须保留原始达人及平台清单。');
+ const identity=e=>normName(e.author)+'|'+e.platform,byId=new Map(original.map(e=>[identity(e),e])),seen=new Set();
+ return submitted.map(raw=>{const id=identity(raw),old=byId.get(id);if(!old||seen.has(id))throw Error('复核须保留原始达人及平台清单。');seen.add(id);
+  const next={...old};for(const k of [...EXEC_FIELDS,'group'])if(raw[k]!==undefined){if(typeof raw[k]!=='string'||raw[k].length>500)throw Error('复核字段需为简短文本。');next[k]=raw[k].trim();}
+  if(!['','视频','图文'].includes(next.kind))throw Error('内容形式请选择图文或视频，未明确时留空。');
+  next.author=old.author;next.platform=old.platform;next.on=!!next.kind;return next;
+ });
+}
 export function validateExecutionRows(rows){
  if(!Array.isArray(rows)||!rows.length||rows.length>300)throw Error('一次须确认 1 到 300 条执行记录。');
  const seen=new Set();return rows.map(e=>{

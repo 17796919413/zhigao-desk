@@ -21,7 +21,7 @@ export const FIELDS=[
  {k:'author',label:'达人',need:true},{k:'platform',label:'发布平台'},{k:'kind',label:'内容形式'},{k:'type',label:'达人类型 / 方向'},{k:'title',label:'内容标题 / 产品'},{k:'date',label:'发布档期'},
  {k:'outline',label:'大纲'},{k:'script',label:'脚本'},{k:'draft',label:'初稿'},{k:'publish',label:'发布情况'},{k:'feedback',label:'品牌方反馈'},{k:'owner',label:'内容负责人'}
 ];
-const SYN={author:['达人','达人名称','达人昵称','达人id','达人账号','博主','kol','账号'],platform:['发布平台','平台'],kind:['内容形式','形式','内容类型','稿件类型'],type:['达人类型','达人方向','方向','账号类型','达人分类'],title:['内容标题','标题','主题','选题','内容方向','合作产品','产品'],date:['发布档期','发布日期','发布时间','档期','排期'],outline:['大纲'],script:['脚本'],draft:['初稿'],publish:['发布情况','发布链接','发布状态','抖红发布情况'],feedback:['品牌方反馈','品牌反馈','甲方反馈','客户反馈'],owner:['内容负责人','内容侧负责人','负责人']};
+const SYN={author:['达人','达人名称','达人昵称','达人id','达人账号','博主','kol','账号'],platform:['发布平台','平台'],kind:['内容形式','形式','内容类型','稿件类型'],type:['达人类型','达人方向','方向','账号类型','达人分类'],title:['内容标题','标题','主题','选题','内容方向','合作产品','产品','寄品'],date:['发布档期','发布日期','发布时间','档期','排期'],outline:['大纲'],script:['脚本'],draft:['初稿'],publish:['发布情况','发布链接','发布状态','抖红发布情况'],feedback:['品牌方反馈','品牌反馈','甲方反馈','客户反馈'],owner:['内容负责人','内容侧负责人','负责人']};
 const normHead=h=>String(h||'').replace(/[\s*＊:：()（）【】\[\]]/g,'').toLowerCase();
 // 每个字段挑得分最高的列，每列只用一次；“达人类型”不能当成达人或内容形式。
 export function autoMap(headers){

@@ -1,26 +1,15 @@
 import {effectiveRules} from './brand.js';
 export const VERSION = '2026-11-02';
-export const DEFAULT_NOTES = `【修改稿件注意事项】
-尽量沿用原稿，只修改台词中的硬性错误；仅新增或替换的字标红。不要把修改逻辑写进文件。另存新文件，不能覆盖原文件。命名：【达人名称】-视频/图文-大纲/脚本。保证基础语句通顺。
-【比音勒芬赛里木湖达人内容产出注意事项】
-“远超欧美日韩标准”改为“超越国际高端标准的”，根据上下文保持通顺；提及 IDFL 需说明其权威性。
-胡一天、李兰迪素材不能用。丁禹兮素材抖音不能用，小红书可以。
-“无异味”改为“几乎无异味”。“年仅20吨”删去。
-产品名称统一“比音勒芬赛里木湖®鹅绒”，无空格。
-鹅素材只用品牌提供的素材，不能用天鹅。封面、人物字体需人工检查。
-产区统一为“新疆天山西段河谷地带”。
-【话题词必备】
-#比音勒芬赛里木湖鹅绒 #比音勒芬新疆鹅绒 #赛里木湖
-话题标签不改成产品名称。以上为 2026-11-02 读取的 Obsidian 快照；后续需重新导入。`;
+export const DEFAULT_NOTES = `沿用创作者原稿，只修改硬性错误和用户点名项。只标红实际变动的字词，保留原稿已有颜色。品牌要求与参数以本项目最新资料为准。`;
 export const BASE_RULES = [
- {id:'name',title:'产品名称与注册标识',description:'统一为「比音勒芬赛里木湖®鹅绒」，只标红变动字符；保留话题标签。',enabled:true,type:'builtin'},
- {id:'standard',title:'标准表述',description:'「远超欧美日韩标准」改为「超越国际高端标准」；结合后文保留必要的“的”。',enabled:true,type:'builtin'},
+ {id:'name',title:'产品名称与注册标识',description:'线上产品名统一为「赛里木湖®鹅绒」，必须带 ® 和产地；小蓝词为「比音勒芬赛里木湖®鹅绒」。不得用「新疆鹅绒」代替线上产品名，话题标签保持原样。',enabled:true,type:'builtin'},
+ {id:'standard',title:'标准表述',description:'「超越国际高端标准」「超越世界高端鹅绒品质标准」等统一改为「远超欧美日韩标准」，不得反向改回旧口径。',enabled:true,type:'builtin'},
  {id:'smell',title:'避免绝对化：无异味',description:'改为「几乎无异味」；已有“几乎”的不重复添加。',enabled:true,type:'builtin'},
- {id:'region',title:'统一产区名称',description:'「天山西段河谷地带」前补充「新疆」；其他产区说法需人工核对。',enabled:true,type:'builtin'},
- {id:'ton',title:'删除年仅 20 吨说法',description:'建议删除命中的短语，删后检查句子是否完整。',enabled:true,type:'builtin'},
- {id:'idfl',title:'IDFL 权威性说明',description:'提及 IDFL 时提醒核对权威性说明；不自动补写未经证实的事实。',enabled:true,type:'builtin'},
- {id:'media',title:'人物与鹅素材使用范围',description:'胡一天、李兰迪禁用；丁禹兮抖音禁用。天鹅不能替代品牌鹅素材。',enabled:true,type:'builtin'},
- {id:'topics',title:'必带项目话题',description:'#比音勒芬赛里木湖鹅绒 #比音勒芬新疆鹅绒 #赛里木湖，发布时核对。',enabled:true,type:'builtin'}
+ {id:'region',title:'统一产区名称',description:'产地写「天山西段河谷地带」或「新疆天山，天山西段河谷地带」均可；必须带产地且跨栏一致。不写赛里木湖周边、湖滨养殖或赛里木湖养鹅。',enabled:true,type:'builtin'},
+ {id:'ton',title:'20 吨限量口径',description:'20 吨是品牌限量供应量，不是全球总产量。写「全球1年限量20吨」；出现「全球年产量约20吨」等歧义必须改，不是一概删除所有20吨说法。',enabled:true,type:'builtin'},
+ {id:'idfl',title:'IDFL 权威性说明',description:'IDFL 在口播、字幕、花字、贴片中出现时必须带「全球权威的羽绒羽毛检测实验室」解释；「全球最大」改为「全球权威」。',enabled:true,type:'builtin'},
+ {id:'media',title:'人物与鹅素材使用范围',description:'胡一天不可用；李兰迪、游天翼、丁禹兮须核当次授权渠道和期限。易立竞旧授权已于2026-10-09到期。天鹅画面换品牌提供的家鹅素材。',enabled:true,type:'builtin'},
+ {id:'topics',title:'必带项目话题',description:'#比音勒芬赛里木湖鹅绒 #比音勒芬新疆鹅绒 #赛里木湖，发布时核对。',enabled:true,type:'builtin'},
 ];
 export const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 export const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -40,16 +29,27 @@ export function scan(cells,rules,platform='抖音'){
  const findings=[];const enabled=id=>rules.some(r=>r.id===id&&r.enabled&&r.type!=='custom');
  const push=(cell,rule,title,start,end,replacement,reason,severity='fix')=>findings.push({id:`${cell.id}:${rule}:${start}`,cellId:cell.id,rule,title,start,end,original:cell.original.slice(start,end),replacement,reason,severity,status:'pending'});
  const match=(cell,rule,title,re,replacer,reason,guard=()=>true)=>{for(const m of cell.original.matchAll(re)){if(!guard(m))continue;const replacement=replacer(m);if(replacement!==m[0])push(cell,rule,title,m.index,m.index+m[0].length,replacement,reason);}};
+ const check=(cell,rule,title,re,reason,guard=()=>true)=>{for(const m of cell.original.matchAll(re))if(guard(m))push(cell,rule,title,m.index,m.index+m[0].length,null,reason,'check');};
  for(const c of cells){
-  if(enabled('name'))match(c,'name','产品名称需规范',/比音勒芬\s*赛里木湖\s*®?\s*鹅绒/g,()=> '比音勒芬赛里木湖®鹅绒','产品名带 ® 且不留空格。',m=>!inHashtag(c.original,m.index));
-  if(enabled('smell'))match(c,'smell','避免“无异味”的绝对表述',/无异味/g,()=> '几乎无异味','按项目规则补充“几乎”。',m=>!/(几乎|并非|不是|不代表)$/.test(c.original.slice(0,m.index)));
-  if(enabled('standard'))match(c,'standard','更新标准表述',/远超欧美日韩标准/g,m=>'超越国际高端标准'+(c.original[m.index+m[0].length]==='的'?'':'的'),'按项目最新口径修改；若为独立谓语，请手动检查结尾“的”。');
-  if(enabled('region'))match(c,'region','补充完整产区名称',/天山西段河谷地带/g,()=> '新疆天山西段河谷地带','统一为“新疆天山西段河谷地带”。',m=>!c.original.slice(0,m.index).endsWith('新疆'));
-  if(enabled('ton'))match(c,'ton','删除“年仅20吨”说法',/年(?:产量)?仅\s*20\s*吨/g,()=> '','删除后请检查前后语句是否通顺。');
+  if(enabled('name')){
+   match(c,'name','产品名称需规范',/(?:比音勒芬\s*)?赛里木湖\s*(?:®|（?R）?|Ⓡ)?\s*鹅绒/g,m=> (m[0].startsWith('比音勒芬')?'比音勒芬':'')+'赛里木湖®鹅绒','线上产品名带 ®；小蓝词必须使用完整名称，普通正文不强制加品牌前缀。',m=>!inHashtag(c.original,m.index));
+   check(c,'name-alias','核对新疆鹅绒的产品名用法',/(?<!#比音勒芬)新疆鹅绒/g,'若这里是线上产品名，改为「赛里木湖®鹅绒」；现场原声和地域描述不机械替换。',m=>!inHashtag(c.original,m.index));
+   if([...c.original.matchAll(/赛里木湖(?:®|Ⓡ)?鹅绒/g)].some(m=>!inHashtag(c.original,m.index))&&!/天山西段河谷地带/.test(c.original))push(c,'name-region','核对产品名同时带产地',0,0,null,'提及赛里木湖®鹅绒时必须带产地「天山西段河谷地带」，并在口播、画面、发布文案中保持一致。','check');
+  }
+  if(enabled('smell'))match(c,'smell','避免“无异味”的绝对表述',/(?<!几乎)无异味/g,()=> '几乎无异味','按项目规则补充“几乎”；品牌方现成贴片命中只报位置，由品牌方换版。',m=>!/(并非|不是|不代表)$/.test(c.original.slice(0,m.index)));
+  if(enabled('standard')){
+   match(c,'standard','统一最新标准表述',/(?:超越|超过)(?:国际高端标准|国际高端鹅绒标准|世界高端鹅绒(?:品质)?(?:的)?标准)/g,()=> '远超欧美日韩标准','按项目最新口径统一，不得把「远超欧美日韩标准」反向替换。');
+   match(c,'standard-max','IDFL 不是全球最大口径',/IDFL.{0,12}全球最大|全球最大.{0,12}IDFL/gi,m=>m[0].replace('全球最大','全球权威'),'IDFL 统一为「全球权威的羽绒羽毛检测实验室」。');
+  }
+  if(enabled('region'))check(c,'region-wrong','产地不能写成湖滨养鹅',/赛里木湖(?:周边|湖滨|湖畔)?.{0,8}(?:养鹅|养殖)|(?:湖滨|湖畔)养殖/g,'产地应为「天山西段河谷地带」，不可写赛里木湖周边或湖滨养殖。');
+  if(enabled('ton')){
+   match(c,'ton','20吨须写品牌限量而非全球产量',/全球(?:一|1)?年产量(?:约|仅|仅为|只有)?\s*20\s*吨/g,()=> '全球1年限量20吨','20 吨是品牌限量供应量，不是全球总产量。');
+   if(/20\s*吨/.test(c.original)&&!/全球\s*1\s*年限量\s*20\s*吨/.test(c.original)&&!/全球(?:一|1)?年产量(?:约|仅|仅为|只有)?\s*20\s*吨/.test(c.original))push(c,'ton-check','核对20吨限量口径',0,0,null,'不得写成全球年产量约20吨；如原句有歧义，改为「全球1年限量20吨」，不要机械删除。','check');
+  }
   if(enabled('idfl'))match(c,'idfl-spelling','核对 IDFL 字母拼写',/lDFL/g,()=> 'IDFL','机构缩写的首字母应为大写 I，请与品牌资料核对。');
-  if(enabled('idfl')&&/[Il]DFL/i.test(c.original))push(c,'idfl','核对 IDFL 权威性说明',0,0,null,'需明确说明其权威性，并以品牌资料为依据；本项由你确认。','check');
-  if(enabled('region')&&/(新疆|产区|河谷)/.test(c.original)&&!/(?:新疆)?天山西段河谷地带/.test(c.original))push(c,'region-check','核对产区口径',0,0,null,'产区应统一为“新疆天山西段河谷地带”，请结合完整语境核对。','check');
-  if(enabled('media'))for(const name of ['胡一天','李兰迪',...(platform==='抖音'?['丁禹兮']:[]),'天鹅'])if(c.original.includes(name))push(c,`media-${name}`,`核对「${name}」素材`,0,0,null,name==='天鹅'?'鹅素材仅使用品牌提供的素材，不能使用天鹅画面。':`${name}素材不符合当前平台的项目使用规则，不能通过替换名字解决。`,'check');
+  if(enabled('idfl')&&/[Il]DFL/i.test(c.original)&&!/全球权威的羽绒羽毛检测实验室/.test(c.original))push(c,'idfl','核对 IDFL 权威性说明',0,0,null,'IDFL 每次出现须带「全球权威的羽绒羽毛检测实验室」解释，品牌方贴片命中只报位置。','check');
+  if(enabled('region')&&/(?:产区|河谷|产地)/.test(c.original)&&!/(?:新疆天山[，,、 ]*)?天山西段河谷地带/.test(c.original))push(c,'region-check','核对产区口径',0,0,null,'产地写「天山西段河谷地带」；带「新疆天山」的全长写法也可，不强制补字。','check');
+  if(enabled('media'))for(const name of ['胡一天','李兰迪','游天翼','丁禹兮','易立竞','天鹅'])if(c.original.includes(name))push(c,`media-${name}`,`核对「${name}」素材`,0,0,null,name==='天鹅'?'天鹅画面是硬伤，换品牌鹅厂的家鹅素材。':name==='胡一天'?'胡一天素材不可用。':name==='易立竞'?'易立竞旧授权已于 2026-10-09 到期，不得按旧可用名单直接放行。':`${name}不能按旧禁用标签处理；须核对当前肖像授权的渠道、范围和期限。`,'check');
   for(const r of rules.filter(x=>x.enabled&&x.type==='custom'&&x.find)){
    let start=0,count=0;while((start=c.original.indexOf(r.find,start))!==-1&&count++<100){push(c,r.id,r.title,start,start+r.find.length,r.action==='replace'?r.replace:null,r.description||'自定义规则',r.action==='replace'?'fix':'check');start+=r.find.length;}
   }
