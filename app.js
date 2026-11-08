@@ -359,8 +359,8 @@ const actions={
  'add-rule':()=>ruleModal(),
  'edit-rule':b=>ruleModal(project().rules.find(r=>r.id===b.dataset.id)),
  'save-rule':saveRule,
- 'delete-task':()=>modal('删除这一阶段的稿件？',`<p>将删除工作台中「${esc(task.stage)}」阶段的稿件副本、各轮记录、审稿进度和修改建议；内容任务本身保留。</p>`,btn('close-modal','取消')+btn('confirm-delete','删除本阶段稿件','primary')),
- 'confirm-delete':async()=>{if(db)await dbOp('delete',task.id);dropVideo(task.id);tasks=tasks.filter(t=>t.id!==task.id);item=itemOf(task);task=null;book=null;docx=null;page=item?'item':'history';closeModal();render();},
+ 'delete-task':b=>{const t=tasks.find(t=>t.id===(b.dataset.id||task?.id));if(!t)return toast('稿件已删除。');if(!workbench.canDelete(t))return toast('稿件正在保存或同步，请稍后再删除。');modal('删除这份稿件？',`<p>将删除「${esc(t.filename)}」及其审稿记录。</p><p>内容任务、其他稿件、已归档文件和飞书数据保留。</p>`,btn('close-modal','取消')+btn('confirm-delete','删除稿件','primary',`data-id="${esc(t.id)}"`));},
+ 'confirm-delete':async b=>{b.disabled=true;try{await deleteManuscript(b.dataset.id);closeModal();render();toast('稿件已删除。');}finally{if(b.isConnected)b.disabled=false;}},
  'open-item':b=>{item=items.find(i=>i.id===b.dataset.id)||null;page=item?'item':'history';editing=null;render();},
  'new-item':()=>modal('新建内容任务',`<p>一个任务就是一个达人在一个平台的一篇内容。可以先建任务，稿件到了再上传；飞书以后再关联。</p><div class="file-chip">项目：${esc(pname(project()))}</div><div class="form-grid" style="margin-top:16px">${itemFields('new',{author:'',platform:'抖音',kind:'视频',title:''})}</div>`,btn('close-modal','取消')+btn('create-item','创建任务','primary')),
  'create-item':async()=>{const f=readFields('new');if(!f.author)return toast('请填写达人名称。');item=makeItem({projectId:project().id,...f});await saveItem(item);page='item';closeModal();render();},
@@ -457,6 +457,21 @@ document.addEventListener('input',e=>{if(e.target.id==='history-search'){search=
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();if(e.key==='Tab'&&$('#modal-root .modal')){const nodes=Array.from($('#modal-root .modal').querySelectorAll('button,input,select,textarea,a[href]')).filter(n=>!n.disabled);const first=nodes[0],last=nodes.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
 
 function itemPage(){return `<div class="page-title"><div><button class="textbtn" data-page="history">← 内容任务</button><h1>${esc(itemName(item))}</h1></div>${btn('upload-stage','上传稿件','primary',`data-stage="${esc(itemProgress(item,docsOf(item)).current==='发布'?'初稿':itemProgress(item,docsOf(item)).current)}"`)}</div><section class="panel wb-list">${workbench.rows(docsOf(item))}</section><details class="wb-secondary"><summary>任务管理、阶段与发布</summary>${legacyItemPage()}</details>`;}
+async function deleteManuscript(id){
+ const t=tasks.find(t=>t.id===id);if(!t)return;
+ if(!workbench.canDelete(t))throw Error('稿件正在保存或同步，请稍后再删除。');
+ if(!db)throw Error('浏览器数据库不可用，稿件未删除。');
+ const changed=batches.filter(b=>b.entries.some(e=>e.docId===id)).map(b=>({...b,updated:new Date().toISOString(),entries:b.entries.map(e=>e.docId===id?{...e,status:'skipped',reason:'稿件已删除。',reviewToken:null}:e)}));
+ // 稿件、视频副本与批次一起落库，事务失败时保留页面中的稿件。
+ await new Promise((resolve,reject)=>{
+  const tx=db.transaction(['tasks','media','batches'],'readwrite');
+  tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||Error('删除失败，请重试。'));tx.onabort=()=>reject(tx.error||Error('删除未完成，请重试。'));
+  try{tx.objectStore('tasks').delete(id);tx.objectStore('media').delete(id);for(const b of changed)tx.objectStore('batches').put(b);}catch(e){tx.abort();reject(e);}
+ });
+ tasks=tasks.filter(t=>t.id!==id);for(const b of changed)replaceBatch(b);
+ if(vMedia.id===id){if(vMedia.url)URL.revokeObjectURL(vMedia.url);vMedia={id:null,url:null,missing:false,loading:false};}
+ if(task?.id===id){task=null;book=null;docx=null;if(page==='review'){item=itemOf(t);page=item?'item':'history';}}
+}
 async function commitWorkbench(records){await persistAI(records);for(const [store,value] of records){const list=store==='tasks'?tasks:store==='items'?items:null;if(!list)continue;const old=list.find(v=>v.id===value.id);if(old)Object.assign(old,value);else list.unshift(value);}}
 async function writeWorkbenchArtifact(t,kind,name,blob){const h=folders.get(t.projectId),p=settings.projects.find(p=>p.id===t.projectId),it=itemOf(t);if(!h||!it||await folderState(h)!=='granted'){folderStates.set(t.projectId,h?await folderState(h):'none');throw Error('请重新授权保存文件夹。');}return saveToFolder(h,[safeName(p?.name||t.projectName),...stageDir(it,t.stage),SUB[kind]],name,blob);}
 const delivery=createDelivery({get:id=>tasks.find(t=>t.id===id),all:()=>tasks,available:t=>folders.has(t.projectId)&&folderStates.get(t.projectId)==='granted',write:writeWorkbenchArtifact,build:aiDraftBlob,name:outName,save:t=>commitWorkbench([['tasks',t]]),refresh:()=>refreshAIViews()});
