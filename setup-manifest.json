@@ -1,28 +1,112 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
-  "runtime": {"name": "node", "minimumMajor": 18},
-  "clients": ["claude", "codex", "workbuddy", "dsh", "manual"],
-  "commands": {
-    "inspect": ["node", "zhigao-connector.mjs", "doctor", "--json"],
-    "configure": ["node", "zhigao-connector.mjs", "setup", "--client", "<current-client>", "--json"],
-    "verify": ["node", "zhigao-connector.mjs", "doctor", "--verify-feishu", "--json"],
-    "repair": ["node", "zhigao-connector.mjs", "repair", "--json"]
+  "runtime": {
+    "name": "node",
+    "minimumMajor": 18
   },
-  "mcpTools": {"status": "zhigao_setup_status", "openExistingSettings": "zhigao_open_setup"},
-  "runtimeUpgrade": {"mode": "authenticated-idle-handoff", "legacy": "explicit-confirmed-standalone-restart", "clientList": "live-connections-only"},
+  "clients": [
+    "claude",
+    "codex",
+    "workbuddy",
+    "dsh",
+    "manual"
+  ],
+  "commands": {
+    "inspect": [
+      "node",
+      "zhigao-connector.mjs",
+      "doctor",
+      "--json"
+    ],
+    "configure": [
+      "node",
+      "zhigao-connector.mjs",
+      "setup",
+      "--client",
+      "<current-client>",
+      "--json"
+    ],
+    "verify": [
+      "node",
+      "zhigao-connector.mjs",
+      "doctor",
+      "--verify-feishu",
+      "--json"
+    ],
+    "repair": [
+      "node",
+      "zhigao-connector.mjs",
+      "repair",
+      "--json"
+    ]
+  },
+  "mcpTools": {
+    "status": "zhigao_setup_status",
+    "openExistingSettings": "zhigao_open_setup"
+  },
+  "runtimeUpgrade": {
+    "mode": "authenticated-idle-handoff",
+    "legacy": "explicit-confirmed-standalone-restart",
+    "clientList": "live-connections-only"
+  },
   "feishu": {
     "package": "@larksuite/cli",
     "identity": "user",
-    "domains": ["sheets", "drive", "wiki"],
-    "login": ["lark-cli", "auth", "login", "--domain", "sheets", "--domain", "drive", "--domain", "wiki", "--no-wait", "--json"],
-    "completeLogin": ["lark-cli", "auth", "login", "--device-code", "<current-device-code>"],
-    "verify": ["lark-cli", "auth", "status", "--json", "--verify"]
+    "domains": [
+      "sheets",
+      "drive",
+      "wiki"
+    ],
+    "login": [
+      "lark-cli",
+      "auth",
+      "login",
+      "--domain",
+      "sheets",
+      "--domain",
+      "drive",
+      "--domain",
+      "wiki",
+      "--no-wait",
+      "--json"
+    ],
+    "completeLogin": [
+      "lark-cli",
+      "auth",
+      "login",
+      "--device-code",
+      "<current-device-code>"
+    ],
+    "verify": [
+      "lark-cli",
+      "auth",
+      "status",
+      "--json",
+      "--verify"
+    ]
   },
-  "archive": {"scope": "current-browser-current-project", "mode": "browser-directory-picker", "userSelectionRequired": true},
-  "completion": {"ai": "page connected and current client can call zhigao_status", "feishu": "user login verified; target table access checked separately when supplied", "archive": "browser.archive.state is granted"}
+  "archive": {
+    "scope": "current-browser-current-project",
+    "mode": "browser-directory-picker",
+    "userSelectionRequired": true
+  },
+  "completion": {
+    "ai": "page connected and current client can call zhigao_status",
+    "feishu": "user login verified; target table access checked separately when supplied",
+    "archive": "browser.archive.state is granted"
+  },
+  "autoUpdate": {
+    "protocol": 1,
+    "sha256": "7854ccfa6f74c782d53724a91df32aaa0bbe0ccba58c898c0567c288b9ed0808",
+    "startup": true,
+    "intervalHours": 6,
+    "retryMinutes": 15,
+    "applyWhen": "idle",
+    "launcherScheme": "zhigao-desk"
+  }
 }

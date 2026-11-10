@@ -8,15 +8,16 @@
 // 架构思路参考 jasonjmcghee/WebMCP（MIT），代码为独立实现。
 
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import readline from 'node:readline';
 import {spawn,spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 
-const VERSION = '1.8.1';
+const VERSION = '1.8.2';
 const PORT = Number(process.env.ZHIGAO_PORT) || 47821;
 const HOME = path.join(os.homedir(), '.zhigao');
 const SELF = fileURLToPath(import.meta.url);
@@ -26,6 +27,106 @@ const ORIGINS = new Set(['https://17796919413.github.io', ...String(process.env.
 const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
 const log = (...a) => process.stderr.write('[zhigao] ' + a.join(' ') + '\n');
 const debug = process.env.ZHIGAO_DEBUG ? log : () => {};
+let updates=null;
+
+// Updates use only the publisher's fixed origin, without credentials or business data.
+const UPDATE_INTERVAL=6*60*60*1000, UPDATE_RETRY=15*60*1000;
+function releaseBytes(file,limit) {
+  const url=new URL(file,SITE);
+  if(url.origin!==new URL(SITE).origin||!['setup-manifest.json','zhigao-connector.mjs'].includes(file))throw Error('UPDATE_SOURCE');
+  return new Promise((resolve,reject)=>{
+    const client=url.protocol==='https:'?https:http;
+    const req=client.get(url,{headers:{'Cache-Control':'no-cache'},timeout:10000},res=>{
+      if(res.statusCode!==200){res.resume();return reject(Error('UPDATE_NETWORK'));}
+      const parts=[];let size=0;
+      res.on('data',part=>{size+=part.length;if(size>limit){req.destroy(Error('UPDATE_SIZE'));return;}parts.push(part);});
+      res.on('end',()=>resolve(Buffer.concat(parts)));res.on('error',reject);
+    });
+    const deadline=setTimeout(()=>req.destroy(Error('UPDATE_NETWORK')),15000);
+    req.on('close',()=>clearTimeout(deadline));req.on('timeout',()=>req.destroy(Error('UPDATE_NETWORK')));req.on('error',reject);
+  });
+}
+function syntaxCheck(file) {
+  return new Promise(resolve=>{
+    const p=spawn(process.execPath,['--check',file],{stdio:'ignore',windowsHide:true});
+    const timer=setTimeout(()=>p.kill(),5000);p.once('error',()=>{clearTimeout(timer);resolve(false);});p.once('exit',code=>{clearTimeout(timer);resolve(code===0);});
+  });
+}
+function updaterLock() {
+  const file=path.join(HOME,'update-lock.json');
+  try {
+    const previous=JSON.parse(fs.readFileSync(file,'utf8'));
+    if(Number.isInteger(previous.pid)){
+      try{process.kill(previous.pid,0);return null;}catch(e){if(e.code!=='ESRCH')return null;}
+      fs.unlinkSync(file);
+    }
+  } catch(e) {if(e.code!=='ENOENT')return null;}
+  const key=crypto.randomUUID();
+  try{fs.writeFileSync(file,JSON.stringify({pid:process.pid,key}),{flag:'wx',mode:0o600});}catch{return null;}
+  return ()=>{try{if(JSON.parse(fs.readFileSync(file,'utf8')).key===key)fs.unlinkSync(file);}catch{}};
+}
+function createUpdateController(activate,isIdle=()=>true) {
+  let latest=null,checkedAt=null,state='unchecked',error=null,wantsApply=false,pending=null;
+  const record=path.join(HOME,'update-state.json');
+  try{const saved=JSON.parse(fs.readFileSync(record,'utf8'));checkedAt=saved.checkedAt;latest=saved.latest;state=saved.state;error=saved.error;}catch{}
+  const save=()=>{try{fs.writeFileSync(record,JSON.stringify({checkedAt,latest,state,error}),{mode:0o600});}catch{}};
+  const snapshot=async()=>{const h=await health();return {installedVersion:installedVersion(),runningVersion:h?.app==='zhigao'?h.version:null,latestVersion:latest?.version||null,state,error,checkedAt,checkIntervalHours:6,retryMinutes:15,canUpdate:!!latest&&newerVersion(latest.version,installedVersion())};};
+  async function check() {
+    try {
+      const m=JSON.parse((await releaseBytes('setup-manifest.json',65536)).toString('utf8'));
+      if(m.schemaVersion!==1||m.name!=='zhigao'||!/^\d+\.\d+\.\d+$/.test(m.version)||m.connector!=='./zhigao-connector.mjs'||m.autoUpdate?.protocol!==1||!/^[a-f0-9]{64}$/.test(m.autoUpdate?.sha256||'')||!Number.isInteger(m.runtime?.minimumMajor)||m.runtime.minimumMajor>Number(process.versions.node.split('.')[0]))throw Error('UPDATE_MANIFEST');
+      latest={version:m.version,sha256:m.autoUpdate.sha256};error=null;state=newerVersion(m.version,installedVersion())?'available':'current';
+    } catch(e) {state='error';error=['UPDATE_MANIFEST','UPDATE_SIZE'].includes(e.message)?e.message:'UPDATE_NETWORK';}
+    checkedAt=new Date().toISOString();save();return snapshot();
+  }
+  async function apply() {
+    wantsApply=true;
+    if(pending)return pending;
+    pending=applyOnce().finally(()=>{pending=null;});return pending;
+  }
+  async function applyOnce() {
+    const h=await health();
+    if(!isIdle()||h?.busy){state='waiting_for_idle';return snapshot();}
+    const unlock=updaterLock();if(!unlock){state='updating_elsewhere';return snapshot();}
+    let temp=null,before=null,installedDigest=null;
+    try {
+      await check();
+      if(state!=='available'){wantsApply=false;return snapshot();}
+      state='downloading';
+      const data=await releaseBytes('zhigao-connector.mjs',1024*1024);
+      const digest=crypto.createHash('sha256').update(data).digest('hex');
+      if(digest!==latest.sha256||data.toString('utf8').match(/const VERSION = '([^']+)'/)?.[1]!==latest.version)throw Error('UPDATE_INTEGRITY');
+      temp=path.join(HOME,'update-'+crypto.randomUUID()+'.mjs');fs.writeFileSync(temp,data,{mode:0o600});
+      if(!(await syntaxCheck(temp)))throw Error('UPDATE_SYNTAX');
+      const now=await health();
+      if(!isIdle()||now?.busy){state='waiting_for_idle';return snapshot();}
+      if(!newerVersion(latest.version,installedVersion())){wantsApply=false;state='current';return snapshot();}
+      before=fs.readFileSync(INSTALLED);backup(INSTALLED);fs.renameSync(temp,INSTALLED);temp=null;installedDigest=digest;
+      await activate(digest);state='current';error=null;wantsApply=false;save();
+    } catch(e) {
+      if(before&&installedDigest&&crypto.createHash('sha256').update(fs.readFileSync(INSTALLED)).digest('hex')===installedDigest){const rollback=INSTALLED+'.rollback';fs.writeFileSync(rollback,before);fs.renameSync(rollback,INSTALLED);}
+      state='error';error=['UPDATE_INTEGRITY','UPDATE_SYNTAX'].includes(e.message)?e.message:'UPDATE_FAILED';wantsApply=false;checkedAt=new Date().toISOString();save();
+    } finally {if(temp)try{fs.unlinkSync(temp);}catch{}unlock();}
+    return snapshot();
+  }
+  let ticking=false,startupChecked=false;
+  async function tick() {
+    if(ticking||pending)return;ticking=true;
+    try {
+      const h=await health();
+      if(newerVersion(installedVersion(),VERSION)&&isIdle())await activate(crypto.createHash('sha256').update(fs.readFileSync(INSTALLED)).digest('hex'));
+      // Only the elected hub checks the network. All MCP clients can adopt a verified local update.
+      if(h?.pid!==process.pid)return;
+      if(wantsApply){await apply();return;}
+      const due=state==='error'?UPDATE_RETRY:UPDATE_INTERVAL;
+      if(!startupChecked||!checkedAt||Date.now()-Date.parse(checkedAt)>=due){startupChecked=true;await check();if(state==='available')await apply();}
+    }catch(e){debug('后台更新检查稍后重试');}finally{ticking=false;}
+  }
+  if(process.env.ZHIGAO_AUTO_UPDATE!=='0'){
+    setTimeout(()=>tick(),1500).unref();setInterval(()=>tick(),5000).unref();
+  }
+  return {snapshot,check,apply,tick};
+}
 
 // ---------- 飞书本机适配器（网页显式点击后调用） ----------
 function larkCliScript() {
@@ -582,6 +683,14 @@ async function onRequest(req, res) {
         return res.end();
       }
       if (req.method !== 'POST') return send(res, 405, {error: 'method'}, origin);
+      if(url.pathname==='/page/update') {
+        if(!ORIGINS.has(origin))return send(res,403,{ok:false,code:'CONNECTOR_ORIGIN'},origin);
+        const body=await readBody(req,4096);
+        if(!updates)return send(res,503,{ok:false,code:'UPDATE_NOT_READY'},origin);
+        if(!['status','check','apply'].includes(body.action))return send(res,400,{ok:false,code:'INVALID_ACTION'},origin);
+        const result=await updates[body.action==='status'?'snapshot':body.action]();
+        return send(res,200,{ok:true,data:result},origin);
+      }
       if (url.pathname === '/page/feishu') {
         // 飞书读写比 AI 连接权限更敏感：只接受部署来源或用户明确配置的来源。
         if (!ORIGINS.has(origin)) return send(res, 403, {error: '请从已配置的工作台网址打开。',code:'CONNECTOR_ORIGIN'}, origin);
@@ -614,7 +723,7 @@ async function onRequest(req, res) {
       }
       return send(res, 404, {error: 'not found'}, origin);
     }
-    if (url.pathname === '/health') return send(res, 200, {app: 'zhigao', version: VERSION, page: pageAlive(), clients: clientList(), pid:process.pid, mode:process.argv[2]==='hub'?'standalone':'mcp', busy:hubBusy(), capabilities:['feishu-status','idle-handoff']},originOk(origin)?origin:undefined);
+    if (url.pathname === '/health') return send(res, 200, {app: 'zhigao', version: VERSION, page: pageAlive(), clients: clientList(), pid:process.pid, mode:['hub','wake'].includes(process.argv[2])?'standalone':'mcp', busy:hubBusy(), capabilities:['feishu-status','idle-handoff','connector-update']},originOk(origin)?origin:undefined);
     if (url.pathname.startsWith('/agent/')) {
       // 只给本机进程用：浏览器发来的（带 Origin）一律拒绝，且必须带本机口令
       if (origin || req.headers['x-zhigao-secret'] !== hubSecret()) return send(res, 403, {error: 'forbidden'});
@@ -673,26 +782,27 @@ function health() {
 
 const me = {key: crypto.randomUUID(), name: 'AI'};
 const isToolProbe = () => me.name.startsWith('workbuddy-mcp-probe:');
+const announceClient = () => me.name!=='AI'&&!isToolProbe();
 let rolePending=null;
 async function ensureRole() {
   if(!rolePending)rolePending=ensureRoleOnce().finally(()=>{rolePending=null;});
   return rolePending;
 }
 async function ensureRoleOnce() {
-  if (hub.server) { hub.clients.set(me.key, {name: me.name, seen: Date.now()}); return; }
-  if (await startHub()) { log('已作为本机中转运行，端口', PORT); hub.clients.set(me.key, {name: me.name, seen: Date.now()}); return; }
+  if (hub.server) { if(announceClient())hub.clients.set(me.key, {name: me.name, seen: Date.now()}); return; }
+  if (await startHub()) { log('已作为本机中转运行，端口', PORT); if(announceClient())hub.clients.set(me.key, {name: me.name, seen: Date.now()}); return; }
   const h = await health();
   if (h?.app !== 'zhigao') throw Error(`端口 ${PORT} 被其他程序占用。可设置环境变量 ZHIGAO_PORT 换一个端口（网页端需同步修改）。`);
   if(newerVersion(VERSION,h.version)&&h.capabilities?.includes('idle-handoff')) {
     const result=await agentPost('/agent/handoff',{version:VERSION},3000).catch(()=>null);
     if(result?.ok){
       for(let i=0;i<10;i++){
-        if(await startHub()){hub.clients.set(me.key,{name:me.name,seen:Date.now()});log('已接替旧版中转',h.version,'→',VERSION);return;}
+        if(await startHub()){if(announceClient())hub.clients.set(me.key,{name:me.name,seen:Date.now()});log('已接替旧版中转',h.version,'→',VERSION);return;}
         await new Promise(r=>setTimeout(r,100));
       }
     }
   }
-  await agentPost('/agent/hello', {key: me.key, name: me.name}).catch(() => {});
+  if(announceClient())await agentPost('/agent/hello', {key: me.key, name: me.name}).catch(() => {});
 }
 async function callTool(name, args) {
   if(name === 'zhigao_setup_status')return setupStatus(args);
@@ -708,8 +818,27 @@ async function callTool(name, args) {
 }
 
 // ---------- MCP（stdio，换行分隔的 JSON-RPC） ----------
+function connectorRuntime(){return {version:VERSION,tools:TOOLS,callTool,ensureRole,bind(identity,controller){Object.assign(me,identity);updates=controller;}};}
+function runtimeHost(isIdle=()=>true,onUpdated=()=>{}) {
+  let current=connectorRuntime(),switching=null;
+  const activate=async digest=>{
+    if(!newerVersion(installedVersion(),current.version))return;
+    if(switching)return switching;
+    switching=(async()=>{
+      const module=await import(pathToFileURL(INSTALLED).href+'?update='+digest);
+      const next=module.connectorRuntime();
+      if(next.version!==installedVersion())throw Error('UPDATE_RUNTIME');
+      next.bind(me,controller);await next.ensureRole();current=next;onUpdated();
+    })().finally(()=>{switching=null;});
+    return switching;
+  };
+  const controller=path.resolve(SELF)===path.resolve(INSTALLED)?createUpdateController(activate,isIdle):null;
+  current.bind(me,controller);
+  return {get current(){return current;},get switching(){return switching;},controller};
+}
 function serveMcp() {
   const out = m => process.stdout.write(JSON.stringify(m) + '\n');
+  let activeCalls=0,host=null;
   const rl = readline.createInterface({input: process.stdin});
   rl.on('line', async line => {
     if (!line.trim()) return;
@@ -719,19 +848,24 @@ function serveMcp() {
     try {
       if (m.method === 'initialize') {
         const ci = m.params?.clientInfo; if (ci?.name) me.name = String(ci.name).slice(0, 60);
+        if(!isToolProbe()&&!host)host=runtimeHost(()=>activeCalls===0,()=>out({jsonrpc:'2.0',method:'notifications/tools/list_changed'}));
         if(!isToolProbe())ensureRole().catch(e => log(e.message));
-        return reply({protocolVersion: m.params?.protocolVersion || '2025-06-18', capabilities: {tools: {listChanged: false}},
+        return reply({protocolVersion: m.params?.protocolVersion || '2025-06-18', capabilities: {tools: {listChanged: true}},
           serverInfo: {name: 'zhigao', title: '知稿审稿工作台', version: VERSION}, instructions: INSTRUCTIONS});
       }
       if (m.method === 'ping') return reply({});
-      if (m.method === 'tools/list') return reply({tools: TOOLS});
+      if(host?.switching)await host.switching;
+      const runtime=host?.current||connectorRuntime();
+      if (m.method === 'tools/list') return reply({tools: runtime.tools});
       if (m.method === 'tools/call') {
         const name = m.params?.name;
-        if (!TOOLS.some(t => t.name === name)) return reply({content: [{type: 'text', text: `未知工具：${name}`}], isError: true});
+        if (!runtime.tools.some(t => t.name === name)) return reply({content: [{type: 'text', text: `未知工具：${name}`}], isError: true});
+        activeCalls++;
         try {
-          const r = await callTool(name, m.params?.arguments || {});
+          const r = await runtime.callTool(name, m.params?.arguments || {});
           return reply({content: [{type: 'text', text: typeof r === 'string' ? r : JSON.stringify(r, null, 2)}]});
         } catch (e) { return reply({content: [{type: 'text', text: JSON.stringify({error:e.message,code:e.code||'CONNECTOR_ERROR',details:e.details||{}})}], isError: true}); }
+        finally {activeCalls--;}
       }
       if (m.method === 'resources/list') return reply({resources: []});
       if (m.method === 'prompts/list') return reply({prompts: []});
@@ -740,7 +874,7 @@ function serveMcp() {
   });
   rl.on('close', () => process.exit(0));
   // 中转退出时接替；定期向中转报到，让网页显示有哪些 AI 在线
-  setInterval(() => {if(!isToolProbe())ensureRole().catch(e=>debug(e.message));}, 5000).unref();
+  setInterval(() => {if(!isToolProbe())(host?.current.ensureRole||ensureRole)().catch(e=>debug(e.message));}, 5000).unref();
 }
 
 // ---------- 安装到各 AI 客户端 ----------
@@ -826,6 +960,23 @@ function installedVersion(){
   try{return fs.readFileSync(INSTALLED,'utf8').match(/const VERSION = '([^']+)'/)?.[1]||'unknown';}
   catch{return null;}
 }
+function registerUpdateLauncher() {
+  if(process.platform!=='win32'||process.env.ZHIGAO_REGISTER_URI==='0')return {state:'unsupported'};
+  const launcher=path.join(HOME,'open-connector.vbs'),key='HKCU\\Software\\Classes\\zhigao-desk';
+  const queryScript=`$OutputEncoding=[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $p=Get-ItemProperty -LiteralPath 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\zhigao-desk\\shell\\open\\command' -ErrorAction SilentlyContinue; if($p){$p.'(default)'}; exit 0`;
+  const query=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',queryScript],{encoding:'utf8',windowsHide:true,timeout:5000});
+  if(query.status!==0)return {state:'failed'};
+  if(String(query.stdout||'').trim()&&!String(query.stdout).toLowerCase().includes(launcher.toLowerCase()))return {state:'conflict'};
+  // The protocol URL is deliberately not interpolated or passed to a shell.
+  const command=`"${process.execPath}" "${INSTALLED}" wake`;
+  const launchText='CreateObject("WScript.Shell").Run "'+command.replaceAll('"','""')+'", 0, False\r\n';
+  fs.writeFileSync(launcher,Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(launchText,'utf16le')]));
+  const wscript=path.join(process.env.SystemRoot||'C:\\Windows','System32','wscript.exe');
+  const entries=[['/ve','/d','URL:Zhigao Connector'],['/v','URL Protocol','/d','']];
+  for(const args of entries){if(spawnSync('reg.exe',['add',key,...args,'/f'],{stdio:'ignore',windowsHide:true}).status!==0)return {state:'failed'};}
+  const r=spawnSync('reg.exe',['add',key+'\\shell\\open\\command','/ve','/d',`"${wscript}" "${launcher}"`,'/f'],{stdio:'ignore',windowsHide:true});
+  return {state:r.status===0?'registered':'failed'};
+}
 function legacyListener() {
   if(process.platform!=='win32')return null;
   // Read only the owner of this one loopback listener; never enumerate or stop all Node processes.
@@ -872,7 +1023,7 @@ async function setupStatus({verifyFeishu=false,client=null}={}) {
   try{larkCliScript();feishu=verifyFeishu?await feishuConnectionStatus():{state:'installed',login:'not_checked'};}
   catch(e){feishu={state:'missing',code:e.code||'FEISHU_CLI_MISSING'};}
   const report={schemaVersion:1,version:VERSION,
-    connector:{installedVersion:installed,state:!installed?'not_installed':installed===VERSION?'installed':'update_needed',runningVersion:h?.app==='zhigao'?h.version:null,
+    connector:{installedVersion:installed,state:!installed?'not_installed':installed===VERSION||newerVersion(installed,VERSION)?'installed':'update_needed',runningVersion:h?.app==='zhigao'?h.version:null,
       runtimeState:h?.app!=='zhigao'?'not_running':newerVersion(installed,h.version)?h.capabilities?.includes('idle-handoff')?(h.busy?'waiting_for_idle':'reload_client'):'legacy_restart_required':'current',
       ...(h?.pid?{pid:h.pid,mode:h.mode,busy:h.busy}:{})},
     ai:{state:h?.app!=='zhigao'?'not_running':!h.page?'page_not_connected':h.clients?.length?'connected':'waiting_for_client',clients:h?.app==='zhigao'?h.clients:[],listMeaning:'live_connections_only',note:'此列表只表示近期在线连接，不代表已配置客户端清单。WorkBuddy 等客户端可能在探测工具后断开，在实际使用时重新连接。'},
@@ -908,8 +1059,9 @@ async function setupClient(opts) {
   if(opts.client!=='manual'&&!['configured','patch_ready'].includes(before.state))note=CLIENTS[opts.client].add()||'';
   const after=clientSetupState(opts.client);
   if(opts.client!=='manual'&&!['configured','patch_ready'].includes(after.state))throw Object.assign(Error('客户端配置尚未验证，请检查 MCP 设置。'),{code:'CLIENT_NOT_VERIFIED'});
+  const launcher=registerUpdateLauncher();
   const runtime=await health()?await repairRuntime():{state:'not_running',changed:false};
-  return {ok:true,version:VERSION,connector:same?'unchanged':'installed',client:after,runtime,
+  return {ok:true,version:VERSION,connector:same?'unchanged':'installed',client:after,runtime,launcher,
     ...(opts.client==='manual'?{mcp:{type:'stdio',command:NODE,args:[INSTALLED]}}:{}),
     ...(note?{note}:{}),next:'重新加载当前客户端的知稿 MCP，打开 openUrl，再调用 zhigao_setup_status。',openUrl:SITE+'?connect=1',guide:SITE+'AGENT_SETUP.md'};
 }
@@ -922,6 +1074,7 @@ async function install(which) {
   fs.mkdirSync(HOME, {recursive: true});
   if (path.resolve(SELF) !== path.resolve(INSTALLED)) {backup(INSTALLED);fs.copyFileSync(SELF, INSTALLED);}
   hubSecret();
+  registerUpdateLauncher();
   const keys = which ? [which] : Object.keys(CLIENTS);
   console.log(`知稿连接器 ${VERSION} 已放到 ${INSTALLED}\nNode：${NODE}\n`);
   for (const k of keys) {
@@ -938,8 +1091,8 @@ function uninstall(which) {
 }
 
 // ---------- 入口 ----------
-export {parseExecutionSheet,buildExecutionData,refinedSheets,executionDate,extractExecution};
-if(process.argv[1]&&path.resolve(process.argv[1])===SELF){
+export {parseExecutionSheet,buildExecutionData,refinedSheets,executionDate,extractExecution,connectorRuntime};
+if(!new URL(import.meta.url).search&&process.argv[1]&&path.resolve(process.argv[1])===SELF){
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === 'install') install(arg).catch(e=>{log('安装未完成：',e.message);process.exitCode=1;});
 else if (cmd === 'setup' || cmd === 'doctor') setupCli(cmd,process.argv.slice(3));
@@ -950,7 +1103,8 @@ else if(cmd==='repair') {
 }
 else if (cmd === 'uninstall') uninstall(arg);
 else if (cmd === 'status') health().then(h => console.log(h ? `中转运行中 · 网页${h.page ? '已连接' : '未连接'} · AI 客户端：${h.clients.join('、') || '无'}` : '中转未运行（AI 客户端启动后会自动拉起）'));
-else if (cmd === 'hub') startHub().then(ok => { if (!ok) { log('端口已被占用'); process.exit(1); } log('中转运行中，端口', PORT, '（Ctrl+C 退出）'); });
+else if (cmd === 'hub') {runtimeHost();startHub().then(ok => { if (!ok) { log('端口已被占用'); process.exit(1); } log('中转运行中，端口', PORT, '（Ctrl+C 退出）'); });}
+else if(cmd==='wake'){const host=runtimeHost();host.current.ensureRole().catch(e=>{log(e.message);process.exitCode=1;});}
 else if (cmd === '--version' || cmd === '-v') console.log(VERSION);
 else if (cmd === 'help' || cmd === '--help' || cmd === '-h') console.log('用法：node zhigao-connector.mjs [setup --client <claude|codex|workbuddy|dsh|manual> --json | doctor [--client <client>] [--verify-feishu] --json | repair [--restart-legacy --confirm-idle] --json | install [client] | uninstall | status | hub]\nrepair 的旧版选项仅在确认无进行中的任务后使用；只处理已验证的独立知稿中转。接入说明：'+SITE+'AGENT_SETUP.md');
 else if (cmd) { console.log(`未知命令：${cmd}，见 --help`); process.exit(1); }

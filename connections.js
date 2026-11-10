@@ -1,5 +1,6 @@
 // 接入引导：状态来自实际连接或显式检查，教程按需展开。
 import {folderSupported} from './folder.js';
+import {WEB_VERSION,newer,checkUpdates,localUpdate} from './connector-updates.js';
 
 export const FEISHU_COMMANDS = {
   install: 'npm install -g @larksuite/cli',
@@ -16,13 +17,14 @@ export function feishuIssue(code) {
     FEISHU_ACCESS: ['access', '表格访问受限', '用已登录的账号打开这张表，向表格所有者申请相应访问权限。'],
     CONNECTOR_OFFLINE: ['connector', '连接器未运行', '启动已接入知稿的 AI 客户端，再检查连接。'],
     CONNECTOR_ORIGIN: ['origin', '当前网址未接入', '请从正式工作台打开；本地部署需配置连接器的网页来源。'],
-    CONNECTOR_UPDATE: ['update', '连接器待更新', '更新本机连接器并重启 AI 客户端，再检查连接。'],
+    CONNECTOR_UPDATE: ['update', '连接器待更新', '点击上方“检查更新”，核对本机连接器版本。'],
   })[code] || ['error', '检查未完成', '确认网络可用后，重新检查。'];
 }
 
 export function createConnections(ctx) {
   const esc = ctx.esc;
   let expanded = '', feishu = {state: 'unknown'}, checking = false;
+  let update=null,updateBusy=false,updatePoll=0;
   const button = (action, text, attrs = '') => ctx.btn(action, text, 'small', attrs);
   const command = (key, value) => `<div class="connect-command"><textarea id="connect-cmd-${key}" aria-label="${esc(key === 'login' ? '飞书授权命令' : '设置命令')}" readonly rows="2">${esc(value)}</textarea>${button('connect-copy', '复制', `data-key="${key}"`)}</div>`;
   const aiInfo = () => ({
@@ -53,6 +55,16 @@ export function createConnections(ctx) {
     const open = expanded === key;
     return `<section class="connect-row" data-connection="${key}"><div class="connect-row-head"><div class="connect-copy"><h3>${title}<span class="connect-status" data-status="${key}" role="status">${esc(label)}</span></h3><p>${esc(description)}</p></div><div class="connect-actions">${action}${button('connect-expand', open ? '收起' : '设置', `data-section="${key}" aria-expanded="${open}" aria-controls="connect-guide-${key}"`)}</div></div><div id="connect-guide-${key}" class="connect-guide" ${open ? '' : 'hidden'}>${guide}</div></section>`;
   }
+  function updatePanel() {
+    if(!update)return '';
+    const labels={checking:'正在检查版本…',available:'有新版连接器可用。',current:'连接器已是最新版本。',waiting_for_idle:'正在处理任务，完成后自动更新。',downloading:'正在下载并校验更新…',updating_elsewhere:'本机另一个客户端正在更新…',offline:'未检测到本机连接器。请启动后再检查；首次使用需安装一次。',waking:'正在等待本机连接器启动…',legacy:'此旧版还没有网页更新能力，需要先安装一次新版。',origin:'当前网址未获本机连接器允许，请从正式知稿网址打开。',network_error:'无法获取最新版本，请检查网络后重试。',error:'检查或更新未完成，现有版本继续可用。'};
+    const runtimeOld=update.installedVersion&&update.runningVersion&&newer(update.installedVersion,update.runningVersion);
+    let message=labels[update.state]||'检查尚未完成。';
+    if(update.state==='current'&&runtimeOld)message='新版已安装，运行中的旧连接正在等待切换。';
+    if(['UPDATE_INTEGRITY','UPDATE_SYNTAX'].includes(update.error))message='更新文件未通过校验，已保留现有版本。稍后重试。';
+    const available=update.state==='available'&&newer(update.latestVersion,update.installedVersion);
+    return `<section class="connect-update" aria-live="polite" aria-label="更新检查结果"><p data-update-status>${esc(message)}</p><p class="connect-note">网页 ${WEB_VERSION} · 本机连接器 ${esc(update.installedVersion||'未读取')} · 最新 ${esc(update.latestVersion||'未获取')}${runtimeOld||(!update.installedVersion&&update.runningVersion)?` · 正在运行 ${esc(update.runningVersion)}`:''}</p><div class="connect-actions">${available?button('connect-update-apply','更新连接器',updateBusy?'disabled':''):''}${['offline','waking'].includes(update.state)?button('connect-update-wake','启动连接器',update.state==='waking'?'disabled':''):''}${['offline','legacy'].includes(update.state)?button('connect-expand','安装 / 升级','data-section="ai"'):''}${update.webUpdate?button('connect-update-refresh','刷新网页'):''}</div><p class="connect-note">启动后检查一次，运行期间每 6 小时检查；网络失败后 15 分钟重试。有新版时在任务空闲后更新。</p></section>`;
+  }
   function body() {
     const p = ctx.project(), folder = ctx.folder(p.id), folderState = ctx.folderState(p.id), [aiLabel, aiDesc] = aiInfo();
     const issue = feishu.code ? feishuIssue(feishu.code) : null;
@@ -60,7 +72,7 @@ export function createConnections(ctx) {
     const fsDesc = feishu.state === 'ready' ? '飞书账号已就绪，关联表格后即可读取与同步。' : issue?.[2] || '连接飞书账号，读取表格并同步审稿进度。';
     const folderLabel = !folderSupported() ? '使用下载' : folderState === 'granted' ? '已关联' : folder ? '待授权' : '未设置';
     const folderDesc = folder ? folder.name : '按当前品牌保存原件、标红稿和意见单。';
-    return `<p class="connect-intro">按需连接，用到时再设置。</p>` +
+    return `<div class="connect-intro-row"><p class="connect-intro">按需连接，用到时再设置。</p>${button('connect-update-check',updateBusy?(update?.state==='downloading'?'更新中…':'检查中…'):'检查更新',updateBusy?'disabled':'')}</div>` +updatePanel()+
       row('ai', 'AI 审稿', aiLabel, aiDesc, ['off','offline'].includes(ctx.agent.state) ? button('agent-on', '连接 AI') : '', aiGuide()) +
       row('feishu', '飞书同步', fsLabel, fsDesc, button('connect-check', checking ? '检查中…' : '检查连接', checking ? 'disabled' : ''), feishuGuide() + (['connector','update','origin'].includes(feishu.state) ? button('connect-expand', '设置连接器', 'data-section="ai"') : '')) +
       row('folder', '本地归档', folderLabel, folderDesc, folderSupported() ? button(folder && folderState !== 'granted' ? 'connect-folder-grant' : 'connect-folder-pick', folder ? folderState === 'granted' ? '更换文件夹' : '授权文件夹' : '选择文件夹', `data-pid="${esc(p.id)}"`) : '', `<p>为“${esc(p.name)}”选择一个文件夹，并在浏览器提示中允许保存。审稿完成后会自动归档。</p><p>浏览器再次询问时，点击“授权文件夹”。暂不设置时，可从稿件列表导出文件。</p><p>本地归档请使用桌面版 Edge 或 Chrome；其他浏览器可下载导出文件。</p>`) +
@@ -89,6 +101,24 @@ export function createConnections(ctx) {
     catch (e) { const issue = feishuIssue(e.code); feishu = {state:issue[0], code:e.code || 'FEISHU_NETWORK'}; }
     finally { checking = false; refresh(); }
   }
+  async function checkVersion() {
+    if(updateBusy)return;updateBusy=true;update={...update,state:'checking'};refresh();
+    try{update=await checkUpdates();}catch{update={...update,state:'error'};}
+    finally{updateBusy=false;refresh();}
+  }
+  function mergeUpdate(next) {
+    const latest=newer(update?.latestVersion,next.latestVersion)?update.latestVersion:next.latestVersion;
+    update={...update,...next,latestVersion:latest};
+    if(update.state==='current'&&newer(latest,update.installedVersion))update.state='available';
+  }
+  async function watchUpdate(token,attempt=0) {
+    if(token!==updatePoll||!document.querySelector('#connections-body')||attempt>=40)return;
+    try{
+      const next=await localUpdate();mergeUpdate(next);refresh();
+      if(!['waiting_for_idle','downloading','updating_elsewhere'].includes(next.state)&&!(next.state==='current'&&newer(next.installedVersion,next.runningVersion)))return;
+    }catch{}
+    setTimeout(()=>watchUpdate(token,attempt+1),1500);
+  }
   function showIssue(e) {
     if (!/^(FEISHU_|CONNECTOR_)/.test(e.code || '')) return false;
     feishu = {state:feishuIssue(e.code)[0], code:e.code}; open('feishu'); return true;
@@ -98,6 +128,20 @@ export function createConnections(ctx) {
     if (action === 'connect-open') open(b.dataset.section || '');
     if (action === 'connect-expand') { expanded = expanded === b.dataset.section ? '' : b.dataset.section; refresh(); }
     if (action === 'connect-check') await check();
+    if(action==='connect-update-check')await checkVersion();
+    if(action==='connect-update-apply'){
+      if(updateBusy)return true;updateBusy=true;update={...update,state:'downloading'};refresh();
+      try{mergeUpdate(await localUpdate('apply'));}catch{update={...update,state:'error'};}
+      finally{updateBusy=false;refresh();}
+      if(['waiting_for_idle','downloading','updating_elsewhere'].includes(update.state)||(update.state==='current'&&newer(update.installedVersion,update.runningVersion)))watchUpdate(++updatePoll);
+    }
+    if(action==='connect-update-wake'){
+      update={...update,state:'waking'};refresh();location.href='zhigao-desk://check-updates';
+      const token=++updatePoll;
+      const poll=async n=>{if(token!==updatePoll||!document.querySelector('#connections-body'))return;try{const status=await localUpdate();update={...update,...status};await checkVersion();return;}catch{}if(n<10)setTimeout(()=>poll(n+1),1500);else{update={...update,state:'offline'};refresh();}};
+      setTimeout(()=>poll(0),1500);
+    }
+    if(action==='connect-update-refresh')location.reload();
     if (action === 'connect-copy') {
       const field = document.getElementById('connect-cmd-' + b.dataset.key);
       try { await navigator.clipboard.writeText(field.value); ctx.toast('已复制，在终端粘贴并运行。'); }

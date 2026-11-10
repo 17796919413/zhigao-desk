@@ -19,6 +19,12 @@ NODE = shutil.which('node')
 ORIGIN = 'https://17796919413.github.io'
 
 
+def legacy_source():
+    revision = subprocess.check_output(['git', 'log', '-1', '--format=%H', '--fixed-strings', '--grep=Release 知稿 1.7.0:'], cwd=ROOT, text=True, encoding='utf-8').strip()
+    assert revision, 'The 1.7.0 release must be present in repository history'
+    return subprocess.check_output(['git', 'show', revision+':zhigao-connector.mjs'], cwd=ROOT, text=True, encoding='utf-8')
+
+
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='zhigao-runtime-')
@@ -30,7 +36,7 @@ class RuntimeTests(unittest.TestCase):
             self.port = sock.getsockname()[1]
         self.cli = self.home / 'fake-cli.mjs'
         self.cli.write_text("setTimeout(()=>console.log(JSON.stringify({identity:'user',verified:true,identities:{user:{status:'ready',tokenStatus:'valid'}}})),Number(process.env.FAKE_DELAY||0));", encoding='utf-8')
-        self.env = {**os.environ, 'ZHIGAO_PORT': str(self.port), 'ZHIGAO_LARK_CLI': str(self.cli)}
+        self.env = {**os.environ, 'ZHIGAO_PORT': str(self.port), 'ZHIGAO_LARK_CLI': str(self.cli), 'ZHIGAO_AUTO_UPDATE': '0', 'ZHIGAO_REGISTER_URI': '0'}
         self.processes = []
         self.extra_pids = set()
 
@@ -59,7 +65,7 @@ class RuntimeTests(unittest.TestCase):
 
     def write(self, source=SOURCE, version=None):
         if version:
-            source = source.replace("const VERSION = '1.8.1'", f"const VERSION = '{version}'")
+            source = source.replace("const VERSION = '1.8.2'", f"const VERSION = '{version}'")
         self.script.write_text(source.replace('os.homedir()', json.dumps(str(self.home))), encoding='utf-8')
 
     def start(self, *args, name=None):
@@ -118,7 +124,7 @@ class RuntimeTests(unittest.TestCase):
     def test_idle_upgrade_and_feishu_status(self):
         old = self.old_hub()
         self.start(name='new-client')
-        h = self.wait_health(lambda h: h['version'] == '1.8.1')
+        h = self.wait_health(lambda h: h['version'] == '1.8.2')
         self.assertIn('new-client', h['clients'])
         old.wait(timeout=6)
         status, body = self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)
@@ -142,7 +148,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(poll['calls']), 1)
             self.request('/page/result', {'id': poll['calls'][0]['id'], 'result': {'preserved': True}}, origin=ORIGIN)
             self.assertEqual(call.result()[1], {'result': {'preserved': True}})
-        self.wait_health(lambda h: h['version'] == '1.8.1', timeout=9)
+        self.wait_health(lambda h: h['version'] == '1.8.2', timeout=9)
 
     def test_feishu_inflight_blocks_repair(self):
         self.env['FAKE_DELAY'] = '1800'
@@ -161,9 +167,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_handoff_auth_downgrade_and_uninstalled_version_rejected(self):
         self.old_hub()
-        status, _ = self.request('/agent/handoff', {'version': '1.8.1'}, True, secret='wrong-secret')
+        status, _ = self.request('/agent/handoff', {'version': '1.8.2'}, True, secret='wrong-secret')
         self.assertEqual(status, 403)
-        status, _ = self.request('/agent/handoff', {'version': '1.8.1'}, True, ORIGIN)
+        status, _ = self.request('/agent/handoff', {'version': '1.8.2'}, True, ORIGIN)
         self.assertEqual(status, 403)
         for version in ('1.7.0', '1.8.0', '9.0.0', 'invalid'):
             status, _ = self.request('/agent/handoff', {'version': version}, True)
@@ -174,7 +180,7 @@ class RuntimeTests(unittest.TestCase):
         self.old_hub()
         self.start(name='client-a')
         self.start(name='client-b')
-        h = self.wait_health(lambda h: h['version'] == '1.8.1' and {'client-a', 'client-b'} <= set(h['clients']))
+        h = self.wait_health(lambda h: h['version'] == '1.8.2' and {'client-a', 'client-b'} <= set(h['clients']))
         self.assertIn(h['pid'], {p.pid for p in self.processes})
 
     def test_workbuddy_probe_lists_tools_without_claiming_hub(self):
@@ -192,7 +198,7 @@ class RuntimeTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'Windows legacy process identity check')
     def test_real_legacy_170_requires_explicit_scoped_restart(self):
-        legacy = subprocess.check_output(['git', 'show', '0d054d5:zhigao-connector.mjs'], cwd=ROOT, text=True, encoding='utf-8')
+        legacy = legacy_source()
         self.write(legacy)
         old = self.start('hub')
         self.wait_health(lambda h: h['version'] == '1.7.0')
@@ -208,7 +214,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertIsNone(old.poll())
         code, report = self.cli_command('repair', '--restart-legacy', '--confirm-idle', '--json')
         self.assertEqual(code, 0, report)
-        self.assertEqual(report['runningVersion'], '1.8.1')
+        self.assertEqual(report['runningVersion'], '1.8.2')
         old.wait(timeout=5)
         self.assertEqual(self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)[0], 200)
 
@@ -233,11 +239,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertEqual(result['runtime']['state'], 'restarted')
         self.assertEqual(config.read_bytes(), before)
-        self.assertEqual(self.health()['version'], '1.8.1')
+        self.assertEqual(self.health()['version'], '1.8.2')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows legacy process identity check')
     def test_legacy_mcp_owner_is_never_force_stopped(self):
-        legacy = subprocess.check_output(['git', 'show', '0d054d5:zhigao-connector.mjs'], cwd=ROOT, text=True, encoding='utf-8')
+        legacy = legacy_source()
         self.write(legacy)
         old = self.start(name='legacy-client-with-active-session')
         self.wait_health(lambda h: h['version'] == '1.7.0')

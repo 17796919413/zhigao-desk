@@ -30,6 +30,7 @@
 .modal:has(#connections-body) .modal-body{overflow:auto;min-height:0}
 .modal:has(#connections-body) .modal-header,.modal:has(#connections-body) .modal-footer{flex-shrink:0}
 .connect-intro{margin:0 0 8px;color:var(--muted);font-size:13px}
+.connect-intro-row{display:flex;align-items:center;justify-content:space-between;gap:12px}.connect-intro-row .connect-intro{margin:0}.connect-update{padding:16px 0;border-bottom:1px solid var(--line);font-size:13px;line-height:1.7}.connect-update p+p{margin-top:6px}.connect-update .connect-actions:has(button){margin:10px 0}.connect-update .connect-note{overflow-wrap:anywhere}
 .connect-row{border-bottom:1px solid var(--line);padding:24px 0}
 .connect-row-head{display:flex;justify-content:space-between;align-items:center;gap:20px}
 .connect-copy{min-width:0;flex:1}.connect-copy h3{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:15px;line-height:1.7}
