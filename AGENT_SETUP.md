@@ -1,10 +1,10 @@
 # 接通知稿全部功能
 
-连接器版本 1.8.2。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
+连接器版本 1.9.0。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
 
 ## 入口与环境
 
-以用户提供的工作台地址为基础，读取同目录 `setup-manifest.json`。正式地址为 `https://17796919413.github.io/zhigao-desk/`。下载同目录 `zhigao-connector.mjs` 到本机工作目录，文件名保持不变。它是单文件程序，不需要下载整个网站。
+以用户提供的工作台地址为基础，读取同目录 `setup-manifest.json`。正式地址为 `https://17796919413.github.io/zhigao-desk/`。下载同目录 `zhigao-connector.mjs` 到本机工作目录，文件名保持不变。基础连接器是单文件程序，不需要下载整个网站。视频功能由连接器按同版本清单自动获取 media-runtime.mjs 和 media-worker.py；安装前同时核对连接器内置摘要及清单的 SHA-256，不让用户手工拼装组件。
 
 需要 Node.js 18+、能执行本机命令的 Agent、支持 MCP stdio 的审稿客户端。先运行 `node --version`。没有 Node.js 时按用户系统的常规安装方式处理；无法执行本机命令时，说明当前客户端不能代配置，并指向网站已有「连接与授权」教程。
 
@@ -129,3 +129,39 @@ AI 在线列表只表示近期连接，不是配置清单。WorkBuddy 启动时�
 Windows 的 setup/install 同时为当前用户注册 `zhigao-desk` 启动入口，不需管理员权限、不添加开机任务。当本机连接器完全未启动时，网页提供“启动连接器”，浏览器可能要求用户确认打开外部应用，然后复查本机状态。入口只运行固定已安装脚本，不接收 URL 中的命令或参数，不改变系统脚本安全设置。注册失败或已有同名冲突时，在 setup 的 launcher 字段明确返回，禁止覆盖其他程序。非 Windows 当前需启动已配置的 AI 客户端或手动运行连接器；不能把不存在的本机进程显示为已更新。
 
 发布前运行 `node tools/prepare-update-manifest.mjs`，提交连接器与清单同一批次；核对发布的 LF 文件字节 SHA-256 与清单一致。网站发布只提供更新源，不会使完全未启动的电脑自行更新。
+
+## 5. 视频准备与当前品牌完整审核（1.9.0）
+
+### 自动准备与换电脑
+
+用户要求审视频时，先调用 `zhigao_video_runtime_status`。已有 FFmpeg、Python、OCR、转写模型就复用；`ready=false` 时由当前 Agent 调用 `zhigao_setup_video_runtime`，查询状态直到 `setupProgress.state=ready` 且运行检查 `ready=true`，随后自动继续视频准备。不要只返回安装说明后停止，不另开云端模型服务，不安装 Ollama。Windows x64 缺 Python 时，内置引导下载官方安装包并核验发布者签名，安装到知稿私有目录；其他平台缺 Python 时由 Agent 按本机允许的安装方式补齐，再从检查继续。需要权限或用户登录时才提示实际缺项。
+
+模型参数通常省略，复用已缓存模型，无缓存默认 large-v3-turbo。用户明确指定另一个受支持模型时，即使当前运行环境 ready 也要完成切换；核对返回模型名称，不能把旧模型的 ready 当作切换成功。安装锁表示有另一进程正在准备，等待并重新检查，不并发安装同一环境。终端备用入口：
+
+```sh
+node ./zhigao-connector.mjs media doctor --json
+node ./zhigao-connector.mjs media setup --json
+```
+
+附属组件以版本和摘要分目录保存。旧 helper 不会因为文件存在就被当作新版加载；下载两份文件并全部校验成功后才启用，旧版本保留。清单版本不匹配、摘要不符、下载失败或语法校验失败时，停止此次准备并报告未完成，不绕过校验，也不把已发布旧版本说成新版。已验证的配套组件支持离线复用；新模型和缺失依赖仍需下载。
+
+换电脑后用交接包传递品牌资料和原件。资料仍存于各自浏览器，不是多人实时云端数据库。新电脑重新校验视频原件和处理结果，不能复用旧电脑的任务凭据。
+
+### 完整处理与审核顺序
+
+1. `zhigao_status` 确认网页连接和当前品牌；用 `zhigao_list_tasks` 取得准确 docId，不按模糊项目名跨品牌找稿。
+2. `zhigao_prepare_video_review` 启动本机准备；查询 `zhigao_get_video_review_status` 到 complete。处理包含所有解码帧、仅像素完全相同的画面去重、每张唯一画面 OCR，以及所有音轨的每个声道独立完整转写，不混音、不按静音检测裁去转写内容。
+3. `zhigao_get_review_brief` 领取本次品牌依据、全部文字、资料单元、规则和素材清单。逐项 `zhigao_read_review_asset` 读取原生图像或原声音频。所有声道均分成连续短片段进入必听清单；低置信、空转写等额外标出理由。Agent 须核对品牌名、数字、否定词和画面含义，不能只看 ASR 或只抽几帧。
+4. 按当前资料及口径审稿，提交 snapshot、basis、sourceChecks、ruleChecks、reviewedIds、mediaChecks。素材核对须包含本次 receipt 和具体意见；receipt 证明读取，不证明理解正确。长任务用 `zhigao_renew_review` 续租；可先 dryRun 校验。
+5. 仅当 coverage.complete、assurance.complete 均为 true 且 needsSupplement 为 false，才算工具层覆盖完成；仍为待人工复核，不代表品牌已通过。批次必须核对 complete、success、partial、failed、interrupted、skipped；处理结束不能替代全部覆盖完成。
+
+本机 complete 只表示素材准备完成。AI 不具备视觉或听审能力时，改用当前客户端支持这些输入的模型；能力仍不足则明确本稿未完成，不伪造“已看”“已听”或覆盖记录。图片/PDF/视频原件保持只读，输出审核意见报告；报告中的建议需要人工确认，不能当作已改好原片。
+
+### 失败与恢复
+
+- `failed` / `interrupted`：修复具体原因后调用 `zhigao_prepare_video_review({docId,retry:true})`。已验证的帧、OCR、音频检查点会复用；组件、模型或内容身份变化会使旧缓存失效。中断上传从已接收偏移继续。
+- 页面或审稿租约变化：重新领取对应稿件指令；品牌、资料版本或原件变化后不能提交旧结果。补漏用 reopen_review，完整替换结果并保留历史。
+- 资料原件丢失、外链图/图表/SmartArt或其他不支持对象：具体列出阻断项，不能忽略后报完整。
+- 长视频和动态画面会产生较多唯一画面与必听片段。继续按全部清单审核，不为减少成本偷偷抽帧；资源或传输限制应明确报未完成。
+
+发布前须运行 `node tools/prepare-update-manifest.mjs`，同步生成两份 helper 的摘要和字节数、连接器内置摘要以及连接器自身摘要。将连接器、两份 helper 和清单作为同一发布批次。当前本地验收不代表无 Python 的新实体机或所有操作系统均已实测。

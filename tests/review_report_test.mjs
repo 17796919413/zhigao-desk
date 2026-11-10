@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {reviewReportHtml,reviewNeedsAttention,reviewWarnings} from '../review-summary.js';
+const checks=[],check=(name,fn)=>{fn();checks.push(name);console.log('PASS '+name);};
+const project={date:'2026-11-10T10:00:00Z'};
+const base={filename:'合成视频.mp4',fmt:'video',projectName:'隔离测试品牌',remarks:[]};
+const ai={needsSupplement:false,changes:[],warnings:[],blockingWarnings:[],coverage:{reviewed:2,total:2,complete:true},assurance:{complete:true,projectRevision:project.date,basis:{version:'sha256:test'},rules:{checked:1,total:1},sources:{checked:1,total:1},media:{checked:2,total:2},ruleChecks:[],mediaChecks:[]}};
+check('No result never becomes a clean report',()=>{const html=reviewReportHtml(base,project);assert.match(html,/未审核/);assert.doesNotMatch(html,/未发现问题/);});
+check('Incomplete coverage stays incomplete in exported report',()=>{const html=reviewReportHtml({...base,ai:{...ai,needsSupplement:true}},project);assert.match(html,/待补审/);assert.doesNotMatch(html,/未发现问题/);});
+check('Changed brand basis is shown in report',()=>{assert.equal(reviewNeedsAttention({...base,ai},{date:'new'}),true);assert.match(reviewReportHtml({...base,ai},{date:'new'}),/待补审/);});
+check('Read-only media report retains warnings and suggested text',()=>{const html=reviewReportHtml({...base,ai:{...ai,warnings:['2秒画面与口径冲突'],changes:[{id:'asr:0:0:0',original:'完全无异味',revised:'<script>示例</script>',reason:'需改原片'}]}},project);assert.match(html,/原文件未修改/);assert.match(html,/2秒画面与口径冲突/);assert.match(html,/修改建议/);assert.match(html,/&lt;script&gt;/);assert.doesNotMatch(html,/<script>/);});
+check('Completed review uses the existing concise status',()=>{assert.match(reviewReportHtml({...base,ai},project),/已审稿/);});
+check('Internal assurance and processing notes never appear in user reports',()=>{const task={...base,ai:{...ai,warnings:['具体修改意见','缺少凭据','低置信处理过程'],blockingWarnings:['缺少凭据'],processingWarnings:['低置信处理过程']}};assert.deepEqual(reviewWarnings(task),['具体修改意见']);assert.doesNotMatch(reviewReportHtml(task,project),/覆盖|sha256|receipt|凭据|低置信|逐项证据/);});
+console.log(JSON.stringify({total:checks.length,checks}));

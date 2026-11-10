@@ -1,4 +1,4 @@
-export const WEB_VERSION='1.8.2';
+export const WEB_VERSION='1.9.0';
 const HUB='http://127.0.0.1:47821';
 export function newer(a,b){
   if(!/^\d+\.\d+\.\d+$/.test(a||'')||!/^\d+\.\d+\.\d+$/.test(b||''))return false;

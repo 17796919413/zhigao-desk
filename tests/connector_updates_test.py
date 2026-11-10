@@ -45,8 +45,8 @@ class UpdateTests(unittest.TestCase):
         self.write()
         text = self.script.read_text(encoding='utf-8').replace("const SITE = 'https://17796919413.github.io/zhigao-desk/';", f"const SITE = 'http://127.0.0.1:{server.server_port}/';")
         self.script.write_text(text, encoding='utf-8')
-        self.payload = text.replace("const VERSION = '1.8.2'", "const VERSION = '1.8.3'").encode()
-        self.manifest = {'schemaVersion': 1, 'name': 'zhigao', 'version': '1.8.3', 'connector': './zhigao-connector.mjs', 'runtime': {'minimumMajor': 18}, 'autoUpdate': {'protocol': 1, 'sha256': hashlib.sha256(self.payload).hexdigest()}}
+        self.payload = text.replace("const VERSION = '1.9.0'", "const VERSION = '1.9.1'").encode()
+        self.manifest = {'schemaVersion': 1, 'name': 'zhigao', 'version': '1.9.1', 'connector': './zhigao-connector.mjs', 'runtime': {'minimumMajor': 18}, 'autoUpdate': {'protocol': 1, 'sha256': hashlib.sha256(self.payload).hexdigest()}}
         if auto:
             self.env['ZHIGAO_AUTO_UPDATE'] = '1'
 
@@ -59,18 +59,18 @@ class UpdateTests(unittest.TestCase):
     def test_check_and_update_without_ai_or_browser_connection(self):
         self.publisher()
         p = self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.8.2')
+        self.wait_health(lambda h: h['version'] == '1.9.0')
         original = self.script.read_bytes()
         result = self.update('check')
         self.assertEqual(result['state'], 'available')
-        self.assertEqual(result['installedVersion'], '1.8.2')
-        self.assertEqual(result['latestVersion'], '1.8.3')
+        self.assertEqual(result['installedVersion'], '1.9.0')
+        self.assertEqual(result['latestVersion'], '1.9.1')
         self.assertEqual(self.script.read_bytes(), original)
         self.assertEqual(result['checkIntervalHours'], 6)
         self.assertEqual(result['retryMinutes'], 15)
         result = self.update('apply')
         self.assertEqual(result['state'], 'current', result)
-        h = self.wait_health(lambda h: h['version'] == '1.8.3')
+        h = self.wait_health(lambda h: h['version'] == '1.9.1')
         self.assertEqual(h['pid'], p.pid)
         self.assertEqual(h['clients'], [])
         self.assertFalse(h['page'])
@@ -81,7 +81,7 @@ class UpdateTests(unittest.TestCase):
         self.publisher()
         p = self.start(name='existing-codex-session')
         self.assertEqual(json.loads(p.stdout.readline())['id'], 1)
-        self.wait_health(lambda h: h['version'] == '1.8.2')
+        self.wait_health(lambda h: h['version'] == '1.9.0')
         self.assertEqual(self.update('apply')['state'], 'current')
         event = json.loads(p.stdout.readline())
         self.assertEqual(event['method'], 'notifications/tools/list_changed')
@@ -90,14 +90,14 @@ class UpdateTests(unittest.TestCase):
         response = json.loads(p.stdout.readline())
         status = json.loads(response['result']['content'][0]['text'])
         self.assertEqual(response['id'], 7)
-        self.assertEqual(status['version'], '1.8.3')
+        self.assertEqual(status['version'], '1.9.1')
         self.assertEqual(status['connector']['state'], 'installed')
         self.assertIsNone(p.poll())
 
     def test_startup_auto_update_and_no_five_second_network_polling(self):
         self.publisher(auto=True)
         self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.8.3', timeout=14)
+        self.wait_health(lambda h: h['version'] == '1.9.1', timeout=14)
         count = len(self.downloads)
         time.sleep(6)
         self.assertEqual(len(self.downloads), count)
@@ -106,30 +106,30 @@ class UpdateTests(unittest.TestCase):
         self.publisher(auto=True)
         self.env['FAKE_DELAY'] = '2500'
         self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.8.2')
+        self.wait_health(lambda h: h['version'] == '1.9.0')
         with concurrent.futures.ThreadPoolExecutor() as pool:
             call = pool.submit(self.request, '/page/feishu', {'action': 'status'}, False, rt.ORIGIN)
             self.wait_health(lambda h: h['busy'])
             self.assertEqual(self.update('apply')['state'], 'waiting_for_idle')
-            self.assertEqual(self.health()['version'], '1.8.2')
+            self.assertEqual(self.health()['version'], '1.9.0')
             self.assertEqual(call.result()[1]['data']['state'], 'ready')
-        self.wait_health(lambda h: h['version'] == '1.8.3', timeout=12)
+        self.wait_health(lambda h: h['version'] == '1.9.1', timeout=12)
 
     def test_integrity_failure_retains_working_installation(self):
         self.publisher()
         self.manifest['autoUpdate']['sha256'] = '0' * 64
         self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.8.2')
+        self.wait_health(lambda h: h['version'] == '1.9.0')
         before = self.script.read_bytes()
         result = self.update('apply')
         self.assertEqual(result['error'], 'UPDATE_INTEGRITY')
         self.assertEqual(self.script.read_bytes(), before)
-        self.assertEqual(self.health()['version'], '1.8.2')
+        self.assertEqual(self.health()['version'], '1.9.0')
 
     def test_syntax_and_activation_errors_restore_old_version(self):
         self.publisher()
         self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.8.2')
+        self.wait_health(lambda h: h['version'] == '1.9.0')
         before = self.script.read_bytes()
         valid = self.payload
         for suffix, error in [(b'\ninvalid syntax }', 'UPDATE_SYNTAX'), (b'\nthrow Error("fixture activation failure");', 'UPDATE_FAILED')]:
@@ -138,17 +138,17 @@ class UpdateTests(unittest.TestCase):
             result = self.update('apply')
             self.assertEqual(result['error'], error, result)
             self.assertEqual(self.script.read_bytes(), before)
-            self.assertEqual(self.health()['version'], '1.8.2')
+            self.assertEqual(self.health()['version'], '1.9.0')
 
     def test_network_error_and_untrusted_manifest_never_claim_current(self):
         self.publisher()
         self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.8.2')
+        self.wait_health(lambda h: h['version'] == '1.9.0')
         self.remote_status = 503
         result = self.update('check')
         self.assertEqual(result['state'], 'error')
         self.assertEqual(result['error'], 'UPDATE_NETWORK')
-        self.assertEqual(result['installedVersion'], '1.8.2')
+        self.assertEqual(result['installedVersion'], '1.9.0')
         self.remote_status = 200
         self.manifest['connector'] = 'https://untrusted.example/other.mjs'
         self.assertEqual(self.update('apply')['error'], 'UPDATE_MANIFEST')
@@ -157,7 +157,7 @@ class UpdateTests(unittest.TestCase):
     def test_foreign_origin_cannot_trigger_updates(self):
         self.publisher()
         self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.8.2')
+        self.wait_health(lambda h: h['version'] == '1.9.0')
         code, _ = self.request('/page/update', {'action': 'apply'}, origin='https://untrusted.example')
         self.assertEqual(code, 403)
         self.assertEqual(self.downloads, [])
@@ -182,7 +182,7 @@ class UpdateTests(unittest.TestCase):
             self.assertTrue(launcher.read_bytes().startswith(b'\xff\xfe'))
             self.assertNotIn('%1', launcher.read_text(encoding='utf-16'))
             subprocess.run([os.path.join(os.environ['SystemRoot'], 'System32', 'wscript.exe'), str(launcher)], env=self.env, timeout=10, check=True)
-            h = self.wait_health(lambda h: h['version'] == '1.8.2', timeout=10)
+            h = self.wait_health(lambda h: h['version'] == '1.9.0', timeout=10)
             self.extra_pids.add(h['pid'])
             self.assertEqual(h['clients'], [])
             self.assertFalse(h['page'])

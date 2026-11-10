@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
@@ -43,11 +43,30 @@
       "zhigao-connector.mjs",
       "repair",
       "--json"
+    ],
+    "mediaInspect": [
+      "node",
+      "zhigao-connector.mjs",
+      "media",
+      "doctor",
+      "--json"
+    ],
+    "mediaSetup": [
+      "node",
+      "zhigao-connector.mjs",
+      "media",
+      "setup",
+      "--json"
     ]
   },
   "mcpTools": {
     "status": "zhigao_setup_status",
-    "openExistingSettings": "zhigao_open_setup"
+    "openExistingSettings": "zhigao_open_setup",
+    "videoRuntimeStatus": "zhigao_video_runtime_status",
+    "setupVideoRuntime": "zhigao_setup_video_runtime",
+    "prepareVideo": "zhigao_prepare_video_review",
+    "videoStatus": "zhigao_get_video_review_status",
+    "readAsset": "zhigao_read_review_asset"
   },
   "runtimeUpgrade": {
     "mode": "authenticated-idle-handoff",
@@ -98,15 +117,33 @@
   "completion": {
     "ai": "page connected and current client can call zhigao_status",
     "feishu": "user login verified; target table access checked separately when supplied",
-    "archive": "browser.archive.state is granted"
+    "archive": "browser.archive.state is granted",
+    "video": "all frames and audio channels prepared; current brand basis, text, images and required audio reviewed; coverage.complete and assurance.complete true; human confirmation remains"
   },
   "autoUpdate": {
     "protocol": 1,
-    "sha256": "7854ccfa6f74c782d53724a91df32aaa0bbe0ccba58c898c0567c288b9ed0808",
+    "sha256": "179213865c4028438935f61907998c8d4c633bf1b64bb05962bb09fd014fedd4",
     "startup": true,
     "intervalHours": 6,
     "retryMinutes": 15,
     "applyWhen": "idle",
     "launcherScheme": "zhigao-desk"
+  },
+  "media": {
+    "protocol": 1,
+    "version": "1.9.0",
+    "files": {
+      "media-runtime.mjs": {
+        "sha256": "d4ecda5d22b8eadd754ee8a4fba70da7aeb578cce8342b8a1c0e0c6277c06db9",
+        "bytes": 14949
+      },
+      "media-worker.py": {
+        "sha256": "182e0fd15d16f0a305db1ec2faf629d045a3330941462be4ecff1d5c78ed34ba",
+        "bytes": 19105
+      }
+    },
+    "defaultModel": "large-v3-turbo",
+    "installScope": "private-local",
+    "semanticReview": "current-connected-agent"
   }
 }

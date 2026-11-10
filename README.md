@@ -7,3 +7,25 @@
 网页与 Agent 两种方式共用连接器、飞书登录和浏览器归档配置，无需重复设置。
 
 连接与授权面板提供“检查更新”，无需先连接 AI；检测到新版后可直接更新连接器。首次安装 1.8.2 后，连接器启动时检查一次，运行期间每 6 小时检查，网络失败 15 分钟后重试，任务空闲时应用。Windows 支持从页面唤起已安装的连接器；旧版本首次迁移见接入说明。
+
+
+当前版本为 **1.9.0**。
+
+1.9.0 补齐本机视频准备与品牌依据覆盖：Agent 自动检查并准备私有媒体组件，完整解码、逐画面 OCR、分音轨分声道转写，并读取全部画面和连续原声音频。品牌资料原句、有效规则、全部文字和素材均需逐项提交证据；缺项、跨品牌、旧版本依据和伪造读取凭据不能算完整。素材准备 complete 与审核覆盖 complete 由后台分别记录，最终仍待人工复核。
+
+Word/Excel 内嵌图、PDF每页和品牌资料原件进入必审清单；图片、PDF和视频输出意见报告，不改原件。交接包 v2 携带品牌原件和校验信息，同名不同版本分开保留。跨设备须重新验证原件，不是实时共享数据库。
+
+本地收尾验证命令：
+
+```sh
+node tools/prepare-update-manifest.mjs
+node tests/review_assurance_test.mjs
+node tests/media_runtime_edge_test.mjs
+python -X utf8 tests/media_addons_test.py
+python -X utf8 -m unittest discover -s tests -p 'connector_*_test.py' -v
+python -X utf8 tests/review_media_browser.py
+```
+
+浏览器测试依赖项目验证区中的合成素材与私有测试环境；禁止对真实工作台写入测试资料。安装边界、已完成验证和未实测平台以本轮验收记录为准。
+
+本轮增强仅接入后台数据处理及 MCP 审核合同；前端保留原有布局和简短状态，不展示覆盖统计、依据哈希、读取凭据或逐项审计面板。用户报告仅保留具体修改意见。

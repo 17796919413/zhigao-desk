@@ -26,7 +26,7 @@ export async function readDocx(buffer){
  if(['ins','del','moveFrom','moveTo'].some(n=>wAll(doc,n).length))throw Error('文档含修订痕迹。请先在 Word 中接受或拒绝全部修订，另存后再导入。');
  const cells=[];let k=0;
  paragraphs(doc).forEach((p,i)=>{const a=analyse(p);if(!a.text.trim())return;k++;cells.push({id:`p${i}`,address:`${a.inTable?'表格内 · ':''}段落 ${String(k).padStart(2,'0')}`,original:a.text,current:a.text,...(a.locked?{note:'含链接/图片/域，不能自动改写'}:{})});});
- if(!cells.length)throw Error('没有读到可审校的正文。若稿件在文本框或图片里，请转成文字后再导入。');
+  if(!cells.length&&!wAll(doc,'drawing').length&&!wAll(doc,'pict').length&&!wAll(doc,'txbxContent').length)throw Error('没有读到可审校的文字或图片。');
  if(cells.reduce((n,c)=>n+c.original.length,0)>100000)throw Error('正文超过 10 万字，请分批审稿。');
  return {zip,cells};
 }

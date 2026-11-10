@@ -90,3 +90,5 @@
 .wb-empty-item>strong{min-width:0;overflow-wrap:anywhere}
 @media(max-width:600px){.section-title:has(#history-search){flex-wrap:wrap;gap:12px}.section-title:has(#history-search) .list-filters{min-width:0;max-width:100%;flex:1 1 100%}.section-title:has(#history-search) select{min-width:0;flex:1}.section-title:has(#history-search) #list-count{white-space:nowrap}#history-search{width:100%;max-width:none}}
 @media(max-width:600px){.fs-page .panel-heading{flex-wrap:wrap;gap:10px}.fs-page .fs-table{min-width:700px;table-layout:auto}.fs-page .fs-table :is(th,td),.fs-page .refined-table :is(th,td){display:table-cell!important}}
+
+.review-original-image{display:block;max-width:100%;height:auto;margin:0 auto}

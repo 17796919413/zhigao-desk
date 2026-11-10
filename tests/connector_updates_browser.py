@@ -3,13 +3,14 @@ from pathlib import Path
 import functools
 import http.server
 import json
+import os
 import sys
 import threading
 from playwright.sync_api import sync_playwright
 
 sys.stdout.reconfigure(encoding='utf-8')
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT.parent / '_verify' / 'connector-updates-20261110'
+OUT = Path(os.environ.get('ZHIGAO_UPDATE_VERIFY_OUT',str(ROOT.parent / '_verify' / 'connector-updates-20261110')))
 OUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -23,7 +24,7 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 checks = []
 errors = []
 calls = []
-fixture = {'mode': 'offline', 'busy': False, 'installed': '1.8.1', 'remote': '1.8.2', 'remote_failure': False}
+fixture = {'mode': 'offline', 'busy': False, 'installed': '1.8.1', 'remote': '1.9.0', 'remote_failure': False}
 
 
 def ok(name):
@@ -50,9 +51,9 @@ try:
             if fixture['mode'] == 'legacy':
                 return route.fulfill(status=404, json={'error': 'not found'})
             if action == 'apply' and not fixture['busy']:
-                fixture['installed'] = '1.8.2'
-            state = 'waiting_for_idle' if fixture['busy'] and action in ['apply', 'status'] else 'current' if fixture['installed'] == '1.8.2' else 'available'
-            return route.fulfill(json={'ok': True, 'data': {'state': state, 'installedVersion': fixture['installed'], 'runningVersion': fixture['installed'], 'latestVersion': '1.8.2', 'canUpdate': fixture['installed'] != '1.8.2'}})
+                fixture['installed'] = '1.9.0'
+            state = 'waiting_for_idle' if fixture['busy'] and action in ['apply', 'status'] else 'current' if fixture['installed'] == '1.9.0' else 'available'
+            return route.fulfill(json={'ok': True, 'data': {'state': state, 'installedVersion': fixture['installed'], 'runningVersion': fixture['installed'], 'latestVersion': '1.9.0', 'canUpdate': fixture['installed'] != '1.9.0'}})
 
         def manifest(route):
             if fixture['remote_failure']:
@@ -73,7 +74,7 @@ try:
         check.click()
         page.get_by_text('未检测到本机连接器。请启动后再检查；首次使用需安装一次。', exact=True).wait_for()
         assert page.locator('[data-action=connect-update-wake]').is_visible()
-        assert '最新 1.8.2' in page.locator('.connect-update').inner_text()
+        assert '最新 1.9.0' in page.locator('.connect-update').inner_text()
         assert '未读取' in page.locator('.connect-update').inner_text()
         assert page.locator('[data-action=connect-update-apply]').count() == 0
         ok('离线能查线上新版，本机明确未读取，不误报已是最新')
@@ -104,7 +105,7 @@ try:
         page.locator('[data-action=connect-update-apply]').click()
         page.get_by_text('正在处理任务，完成后自动更新。', exact=True).wait_for()
         fixture['busy'] = False
-        fixture['installed'] = '1.8.2'
+        fixture['installed'] = '1.9.0'
         page.get_by_text('连接器已是最新版本。', exact=True).wait_for(timeout=10000)
         ok('忙碌时等待，后台完成后面板自动刷新')
 
@@ -114,14 +115,14 @@ try:
         ok('网络失败不会误报版本最新')
 
         fixture['remote_failure'] = False
-        fixture['remote'] = '1.8.3'
+        fixture['remote'] = '1.9.1'
         check.click()
         page.locator('[data-action=connect-update-refresh]').wait_for()
         assert page.locator('[data-action=connect-update-apply]').is_visible()
         assert '已是最新' not in page.locator('.connect-update').inner_text()
         ok('网页版本落后提供刷新入口；远端与本机检查不一致时不误报最新')
 
-        fixture['remote'] = '1.8.2'
+        fixture['remote'] = '1.9.0'
         fixture['installed'] = '1.8.1'
         check.click()
         page.locator('[data-action=connect-update-apply]').wait_for()

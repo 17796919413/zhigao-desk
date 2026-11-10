@@ -29,7 +29,7 @@ export function splitFeedback(text){
 }
 // 这份稿件专属的品牌反馈：各轮原话 + 已确认的修改要求。只取这一份稿件，不混入其他稿件。
 // 待确认（draft）的条目还没经人确认，不放进审稿依据；“不采纳”的写明不要按它改。
-export const DOC_FB_LIMIT=6000;
+export const DOC_FB_LIMIT=Infinity;
 export function docFeedbackText(t,{limit=DOC_FB_LIMIT}={}){
  const raw=(t?.flow?.feedback||[]).filter(f=>String(f.text||'').trim()),list=(t?.fbItems||[]).filter(x=>x.status!=='draft'&&String(x.text||'').trim());
  if(!raw.length&&!list.length)return'';

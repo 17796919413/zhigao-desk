@@ -4,6 +4,17 @@ const stable = value => JSON.stringify(value, (_, v) => v && typeof v === 'objec
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
 export const sameData = (a, b) => stable(a) === stable(b);
 export const projectSnapshot = p => structuredClone({notes:p.notes||'', library:p.library||[], rules:p.rules||[]});
+// A name is not an identity. Conflicting source versions stay in a separate project.
+export function planProjectImport(existing,incoming,makeId=()=>crypto.randomUUID()){
+ const projects=structuredClone(existing),mapping=new Map(),conflicts=[];
+ for(const p of incoming){const same=projects.find(x=>x.id===p.id),named=projects.some(x=>x.name===p.name);
+  if(same&&same.name===p.name&&sameData(projectSnapshot(same),projectSnapshot(p))){mapping.set(p.id,same.id);continue;}
+  const clash=!!same||named,id=same?makeId():p.id,name=clash?p.name+'（交接资料副本）':p.name;
+  if(clash)conflicts.push({sourceId:p.id,name:p.name,newId:id});
+  projects.push({...structuredClone(p),id,name,status:p.status||'active'});mapping.set(p.id,id);
+ }
+ return {projects,mapping,conflicts};
+}
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const revision = item => {const {history, ...previous}=item; return [...(history||[]), previous];};
 const content = item => {const {history,updated,created,...rest}=item;return rest;};
@@ -41,6 +52,7 @@ export function prepareProjectUpdate(project, args) {
         if(typeof raw.text!=='string'||!raw.text.trim()||raw.text.length>200000)throw Error('资料正文不能为空，且不超过20万字。');
         if(!DOC_KINDS.includes(raw.kind))throw Error('请选择资料类型。');
         fields={title,kind:raw.kind,text:raw.text,source:raw.source===undefined?(old?.source||''):String(raw.source).slice(0,500),active:raw.active??old?.active??true};
+        if(raw.ingestion!==undefined){if(!raw.ingestion||typeof raw.ingestion!=='object'||!Array.isArray(raw.ingestion.blockers)||raw.ingestion.blockers.some(x=>typeof x!=='string'))throw Error('资料读取清单无效。');fields.ingestion=structuredClone(raw.ingestion);}
       }else{
         if(typeof raw.description!=='string'||!raw.description.trim())throw Error('请填写完整口径。');
         if(raw.supersedes!==undefined&&(!Array.isArray(raw.supersedes)||raw.supersedes.some(x=>typeof x!=='string')))throw Error('替代关系格式不正确。');

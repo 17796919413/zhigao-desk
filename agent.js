@@ -1,6 +1,7 @@
+import {createVideoProcessor} from './video-processing.js';
 // 本机 AI 连接：网页长轮询本机连接器（zhigao-connector.mjs），执行 AI 客户端发来的工具调用。
 // 用户点“连接”后才开始访问本机；同一浏览器只允许一个标签页连接，避免两份内存状态互相覆盖。
-import {createReviewService} from './review-batch.js';
+import {createReviewService,canDeepReview} from './review-batch.js';
 import {libraryText,effectiveRules,currentRulesText,fbPrompt,parseFbAI} from './brand.js';
 import {reviewStagesFor,reviewStatus,pendingCount,flowOf,FLOW_STATES,itemProgress,WAIT,waitingOn} from './model.js';
 
@@ -11,7 +12,7 @@ export const TOOL_LABELS={zhigao_reopen_review:'继续审核',zhigao_renew_revie
 const WRITES=new Set(['zhigao_update_project','zhigao_submit_review','zhigao_submit_feedback_items']);
 
 export const agent={state:'off',clients:[],log:[],version:''};
-let reviewService=null;
+let reviewService=null,videoProcessor=null;
 let ctx=null,abort=null,running=false,lockAbort=null;
 const pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
 export const agentWanted=()=>{try{return localStorage.getItem(KEY)==='on';}catch{return false;}};
@@ -31,13 +32,15 @@ export async function feishuLocal(action,data={}){
 
 // ---------- 工具：只读、提交待确认建议；采纳、流转、发送一律留给人 ----------
 const S=()=>ctx.state();
-const findProject=q=>{const ps=S().settings.projects;if(!q)return ps.find(p=>p.id===S().settings.selected)||ps[0];const s=String(q).trim();return ps.find(p=>p.id===s)||ps.find(p=>p.name===s)||ps.find(p=>p.name.includes(s))||null;};
-const docOf=id=>{const t=S().tasks.find(t=>t.id===id);if(!t)throw Error(`找不到稿件 ${id}，请先调用 zhigao_list_tasks 取得 docId。`);return t;};
-const canDeep=t=>!t.reviewReadError&&!!t.cells?.length&&t.fmt!=='pdf'&&t.fmt!=='video';
+const findProject=q=>{const ps=S().settings.projects,p=ps.find(p=>p.id===S().settings.selected);if(!p)throw Error('请选择有效品牌项目。');if(q&&q!==p.id&&q!==p.name)throw Object.assign(Error('请先在网页切换到指定品牌；当前连接只读取选中品牌资料。'),{code:'PROJECT_MISMATCH'});return p;};
+const docOf=id=>{const t=S().tasks.find(t=>t.id===id);if(!t)throw Error(`找不到稿件 ${id}，请先调用 zhigao_list_tasks 取得 docId。`);if(t.projectId!==S().settings.selected)throw Object.assign(Error('稿件不属于当前选中品牌。'),{code:'PROJECT_MISMATCH'});return t;};
+const canDeep=canDeepReview;
 const docRow=t=>{const f=flowOf(t),st=reviewStatus(t);return{docId:t.id,stage:t.stage,format:t.fmt||'text',filename:t.filename||'',round:f.round,flow:FLOW_STATES[f.state]?.label||f.state,pending:st.label,pendingCount:pendingCount(t),aiSuggestions:t.ai?.changes?.length||0,brandFeedbackRounds:f.feedback.length,canDeepReview:canDeep(t),updated:t.updated||''};};
 const unpack=v=>typeof v==='string'?v:JSON.stringify(v??'');
 const tools={
  zhigao_setup_status:args=>ctx.setupStatus(args),
+ zhigao_prepare_video_review:args=>videoProcessor.prepare(args),
+ zhigao_get_video_review_status:args=>videoProcessor.status(args),
  zhigao_open_setup:args=>ctx.openSetup(args),
  async zhigao_update_project(args){return await ctx.updateProject(args);},
  async zhigao_extract_feishu({url,createDocument=false,title}={}){const p=findProject();if(!p||p.status==='ended')throw Error('请选择正在执行的品牌项目。');url=url||p.feishu?.source?.url;if(!url)throw Error('请在工作台保存原始表链接，或传入 url。');const projectId=p.id;
@@ -48,9 +51,9 @@ const tools={
  async zhigao_publish_feishu_extraction({draftId,title,reviewedEntries}){return {ok:true,document:await ctx.publishExtraction(draftId,title,reviewedEntries)};},
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.8.2',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.9.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
- zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=String(project||'').toLowerCase()==='all',p=all?null:findProject(project);if(!all&&!p)throw Error(`找不到项目 ${project}`);
+ zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
   return items.filter(it=>all||it.projectId===p.id).map(it=>{const docs=tasks.filter(t=>t.itemId===it.id),pr=itemProgress(it,docs);return{taskId:it.id,project:pn(it.projectId),author:it.author,platform:it.platform,kind:it.kind,title:it.title,currentStage:pr.current,status:pr.label,waitingOn:WAIT[waitingOn(it,pr)],waitKey:waitingOn(it,pr),publishDate:it.publish?.date||'',documents:docs.sort((a,b)=>reviewStagesFor(it.kind).indexOf(a.stage)-reviewStagesFor(it.kind).indexOf(b.stage)).map(docRow)};})
    .filter(r=>(!wait||r.waitKey===wait)&&(!q||[r.author,r.title,r.platform].join(' ').toLowerCase().includes(q)));},
@@ -66,6 +69,7 @@ const tools={
  zhigao_renew_review:args=>reviewService.zhigao_renew_review(args),
  zhigao_release_review:args=>reviewService.zhigao_release_review(args),
  zhigao_get_review_brief:args=>reviewService.zhigao_get_review_brief(args),
+  zhigao_read_review_asset:args=>reviewService.zhigao_read_review_asset(args),
  zhigao_submit_review:args=>reviewService.zhigao_submit_review(args),
  zhigao_get_feedback_brief({docId}){const t=docOf(docId),f=flowOf(t),fb=f.feedback.at(-1);if(!fb)throw Error('这份稿件还没有记录品牌反馈原话。请让用户先在网页上“记录品牌反馈”。');
   const p=S().settings.projects.find(p=>p.id===t.projectId)||findProject();
@@ -82,7 +86,7 @@ async function handle(call){
  try{const fn=tools[call.name];if(!fn)throw Error(`网页不支持工具 ${call.name}，请刷新工作台到最新版本。`);res={id:call.id,result:await fn(call.args||{})};agent.log.unshift({at,client:call.client,label,ok:true,...(res.result?.savedPath?{path:res.result.savedPath}:{})});}
  catch(e){res={id:call.id,error:e.message||String(e),errorCode:e.code||'REVIEW_ERROR',details:e.details||{}};agent.log.unshift({at,client:call.client,label,ok:false,error:res.error});}
  agent.log.length=Math.min(agent.log.length,30);
- if(WRITES.has(call.name)&&res.result)ctx.notify(`${call.client||'AI'} ${res.result.message}`);
+ if(WRITES.has(call.name)&&res.result&&!call.args?.dryRun&&res.result.message)ctx.notify(call.name==='zhigao_submit_review'?(call.client||'AI')+' 已提交审稿建议':(call.client||'AI')+' '+res.result.message);
  ctx.changed();
  try{await post('/page/result',res);}catch{}
 }
@@ -98,7 +102,7 @@ async function loop(signal){
 }
 async function run(){abort=new AbortController();set('connecting');try{await reviewService.recover();await loop(abort.signal);}finally{running=false;}}
 
-export function initAgent(c){ctx=c;reviewService=createReviewService(c);const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();}
+export function initAgent(c){ctx=c;videoProcessor=createVideoProcessor(c);reviewService=createReviewService({...c,getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();}
 export async function startAgent(){
  remember(true);if(running)return;running=true;set('connecting');
  if(!navigator.locks)return run();

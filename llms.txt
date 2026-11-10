@@ -6,6 +6,11 @@
 
 - [完整接入流程](./AGENT_SETUP.md)
 - [机器可读接入清单](./setup-manifest.json)
-- [单文件连接器](./zhigao-connector.mjs)
+- [基础连接器](./zhigao-connector.mjs)
 
 需要能执行本机命令的 Agent；AI 审稿客户端还需支持 MCP stdio。网页聊天窗口本身不具备这些能力。
+
+
+1.9.0：视频依赖由连接器按同版本清单和内置 SHA-256 自动补齐，旧组件按版本隔离。先 video_runtime_status，缺项 setup_video_runtime 并轮询，再 prepare_video_review / get_video_review_status；准备完成后领取 brief，审核全部转写、OCR、逐帧画面、连续原声音频和当前品牌所有有效资料。不得只抽检，不另开云端语义服务。
+
+提交完整 basis、sourceChecks、ruleChecks、reviewedIds、mediaChecks，逐素材读取原生图像/音频并取得 receipt。coverage.complete 与 assurance.complete 同时为 true 才算覆盖完成，仍待人工复核。失败/中断按 retry:true 续跑；品牌或资料变化须重新领指令。换电脑用交接包传原件，不复用旧电脑任务凭据。
