@@ -22,10 +22,10 @@ async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST
 
 // 飞书读取可由 MCP 发起；写入入口仍仅由网页中的人工确认操作调用。
 export async function feishuLocal(action,data={}){
- if(!['inspect','read','readAll','write','extract','seed','createRefined'].includes(action))throw Error('未知的飞书操作。');
- let r,p;try{r=await fetch(HUB+'/page/feishu',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({...data,action}),cache:'no-store',credentials:'omit',redirect:'error'});p=await r.json();}
- catch(e){throw Error(e.name==='TypeError'?'本机连接器不可用。请启动已接入知稿 MCP 的 AI 客户端，并允许工作台访问本机。':e.message||'无法连接本机飞书适配器。');}
- if(!r.ok||p?.ok!==true)throw Error(p?.error||`本机飞书适配器返回 ${r.status}`);
+ if(!['status','inspect','read','readAll','write','extract','seed','createRefined'].includes(action))throw Error('未知的飞书操作。');
+ let r,p;try{r=await fetch(HUB+'/page/feishu',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({...data,action}),cache:'no-store',credentials:'omit',redirect:'error',...(action==='status'?{signal:AbortSignal.timeout(20000)}:{})});p=await r.json();}
+ catch(e){throw Object.assign(Error(e.name==='TimeoutError'?'检查超时，请重试。':'请启动已接入知稿的 AI 客户端，并允许本地网络访问。'),{code:e.name==='TimeoutError'?'FEISHU_NETWORK':'CONNECTOR_OFFLINE'});}
+ if(!r.ok||p?.ok!==true)throw Object.assign(Error(p?.error||`飞书连接返回 ${r.status}`),{code:p?.code||(r.status===403?'CONNECTOR_ORIGIN':action==='status'?'CONNECTOR_UPDATE':undefined)});
  return p.data;
 }
 
@@ -37,6 +37,8 @@ const canDeep=t=>!t.reviewReadError&&!!t.cells?.length&&t.fmt!=='pdf'&&t.fmt!=='
 const docRow=t=>{const f=flowOf(t),st=reviewStatus(t);return{docId:t.id,stage:t.stage,format:t.fmt||'text',filename:t.filename||'',round:f.round,flow:FLOW_STATES[f.state]?.label||f.state,pending:st.label,pendingCount:pendingCount(t),aiSuggestions:t.ai?.changes?.length||0,brandFeedbackRounds:f.feedback.length,canDeepReview:canDeep(t),updated:t.updated||''};};
 const unpack=v=>typeof v==='string'?v:JSON.stringify(v??'');
 const tools={
+ zhigao_setup_status:args=>ctx.setupStatus(args),
+ zhigao_open_setup:args=>ctx.openSetup(args),
  async zhigao_update_project(args){return await ctx.updateProject(args);},
  async zhigao_extract_feishu({url,createDocument=false,title}={}){const p=findProject();if(!p||p.status==='ended')throw Error('请选择正在执行的品牌项目。');url=url||p.feishu?.source?.url;if(!url)throw Error('请在工作台保存原始表链接，或传入 url。');const projectId=p.id;
   const data=await feishuLocal('extract',{url});const draft=await ctx.saveExtraction(projectId,data);
@@ -46,7 +48,7 @@ const tools={
  async zhigao_publish_feishu_extraction({draftId,title,reviewedEntries}){return {ok:true,document:await ctx.publishExtraction(draftId,title,reviewedEntries)};},
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.7.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.8.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=String(project||'').toLowerCase()==='all',p=all?null:findProject(project);if(!all&&!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
@@ -96,7 +98,7 @@ async function loop(signal){
 }
 async function run(){abort=new AbortController();set('connecting');try{await reviewService.recover();await loop(abort.signal);}finally{running=false;}}
 
-export function initAgent(c){ctx=c;reviewService=createReviewService(c);if(agentWanted())startAgent();}
+export function initAgent(c){ctx=c;reviewService=createReviewService(c);const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();}
 export async function startAgent(){
  remember(true);if(running)return;running=true;set('connecting');
  if(!navigator.locks)return run();

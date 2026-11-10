@@ -25,6 +25,27 @@
 .refined-table{max-height:560px;overflow:auto}.refined-table .task-table{min-width:1000px;table-layout:auto}.refined-table th{position:sticky;top:0;background:#f5f5f5;z-index:1;white-space:nowrap}.refined-table td{min-width:100px;max-width:300px;overflow-wrap:anywhere}.panel-heading #fs-preview-sheet{width:auto;max-width:100%}
 
 @media(max-width:600px){.content:has(.brand-policy-layout) .page-title{align-items:flex-start;flex-direction:column}.content:has(.brand-policy-layout) .page-title h1{width:100%}}
+/* Connections: compact overview, instructions only at the point of need. */
+.modal:has(#connections-body){width:min(680px,calc(100vw - 32px));max-width:680px;display:flex;flex-direction:column;overflow:hidden}
+.modal:has(#connections-body) .modal-body{overflow:auto;min-height:0}
+.modal:has(#connections-body) .modal-header,.modal:has(#connections-body) .modal-footer{flex-shrink:0}
+.connect-intro{margin:0 0 8px;color:var(--muted);font-size:13px}
+.connect-row{border-bottom:1px solid var(--line);padding:24px 0}
+.connect-row-head{display:flex;justify-content:space-between;align-items:center;gap:20px}
+.connect-copy{min-width:0;flex:1}.connect-copy h3{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:15px;line-height:1.7}
+.connect-copy p{font-size:12px;color:var(--muted);line-height:1.8;margin-top:6px;overflow-wrap:anywhere}
+.connect-status{font-size:12px;font-weight:400;color:var(--muted)}
+.connect-actions{display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0;align-items:center}
+.connect-guide{margin-top:20px;padding-top:18px;border-top:1px solid var(--line);font-size:13px;line-height:1.85}
+.connect-guide[hidden]{display:none}.connect-guide>p+p{margin-top:10px}.connect-guide>.connect-actions{margin-top:16px}
+.connect-steps{margin:12px 0 16px;padding-left:22px}.connect-steps li+li{margin-top:14px}
+.connect-command{display:flex;align-items:flex-start;gap:8px;margin:10px 0}
+.connect-command textarea{min-height:64px;height:auto;resize:vertical;flex:1;min-width:0;width:100%;font:12px/1.7 ui-monospace,Consolas,monospace;padding:10px 12px;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--line);border-radius:6px}
+.connect-note{font-size:12px;color:var(--muted)}
+.connect-more{margin-top:16px;font-size:12px;line-height:1.85}.connect-more summary{cursor:pointer;width:fit-content;color:var(--muted);padding:4px 0}.connect-more p{margin:12px 0}.connect-more a{display:inline-block;text-underline-offset:3px}
+.connect-basics{margin-top:20px}.connect-inline{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--muted)}
+#connections-body :is(button,summary,textarea,a):focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+@media(max-width:600px){.connect-row{padding:20px 0}.connect-row-head{align-items:flex-start;flex-direction:column;gap:12px}.connect-row-head>.connect-actions{width:100%}.connect-command{flex-wrap:wrap}.connect-command textarea{flex-basis:100%}.connect-command .button{min-height:36px}.connect-row .button{min-height:36px}.connect-guide{margin-top:16px}.connect-copy h3{gap:8px}.modal:has(#connections-body) .modal-body{padding:18px}.modal:has(#connections-body) .modal-header,.modal:has(#connections-body) .modal-footer{padding:18px}}
 /* Brand library: one drop target, compact import results and inline metadata. */
 /* Batch review: one list, inline detail, project-level output settings. */
 .wb-setup{display:grid;grid-template-columns:1fr 1.2fr 1.2fr;gap:24px;margin-bottom:24px;padding:22px 24px;background:#fff;border:1px solid var(--line);border-radius:12px}

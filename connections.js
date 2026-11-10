@@ -1,0 +1,114 @@
+// 接入引导：状态来自实际连接或显式检查，教程按需展开。
+import {folderSupported} from './folder.js';
+
+export const FEISHU_COMMANDS = {
+  install: 'npm install -g @larksuite/cli',
+  config: 'lark-cli config init',
+  login: 'lark-cli auth login --domain sheets --domain drive --domain wiki',
+};
+
+export function feishuIssue(code) {
+  return ({
+    FEISHU_CLI_MISSING: ['missing', '未安装飞书 CLI', '安装飞书 CLI 后，登录你的飞书账号。'],
+    FEISHU_CONFIG: ['config', '待配置应用', '打开终端完成应用配置，再登录飞书。'],
+    FEISHU_AUTH: ['auth', '待登录飞书', '登录飞书账号，完成表格与云空间授权。'],
+    FEISHU_SCOPE: ['scope', '待补充授权', '补充表格与云空间权限后重试。'],
+    FEISHU_ACCESS: ['access', '表格访问受限', '用已登录的账号打开这张表，向表格所有者申请相应访问权限。'],
+    CONNECTOR_OFFLINE: ['connector', '连接器未运行', '启动已接入知稿的 AI 客户端，再检查连接。'],
+    CONNECTOR_ORIGIN: ['origin', '当前网址未接入', '请从正式工作台打开；本地部署需配置连接器的网页来源。'],
+    CONNECTOR_UPDATE: ['update', '连接器待更新', '更新本机连接器并重启 AI 客户端，再检查连接。'],
+  })[code] || ['error', '检查未完成', '确认网络可用后，重新检查。'];
+}
+
+export function createConnections(ctx) {
+  const esc = ctx.esc;
+  let expanded = '', feishu = {state: 'unknown'}, checking = false;
+  const button = (action, text, attrs = '') => ctx.btn(action, text, 'small', attrs);
+  const command = (key, value) => `<div class="connect-command"><textarea id="connect-cmd-${key}" aria-label="${esc(key === 'login' ? '飞书授权命令' : '设置命令')}" readonly rows="2">${esc(value)}</textarea>${button('connect-copy', '复制', `data-key="${key}"`)}</div>`;
+  const aiInfo = () => ({
+    off: ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'],
+    connecting: ['连接中', '正在连接这台电脑上的知稿连接器。'],
+    offline: ['连接器未运行', '启动已接入知稿的 AI 客户端。首次使用请安装连接器。'],
+    waiting: ['等待 AI 客户端', '连接器已就绪，请打开已接入知稿的 AI 客户端。'],
+    online: ['已连接', ctx.agent.clients.join('、')],
+    'other-tab': ['其他页面已连接', '关闭另一个已连接的知稿标签页，这里会自动接入。'],
+  })[ctx.agent.state] || ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'];
+
+  function aiGuide() {
+    return `<ol class="connect-steps"><li>在电脑安装 Node.js，再打开 PowerShell。<a href="https://nodejs.org/zh-cn" target="_blank" rel="noopener">获取 Node.js ↗</a></li><li>复制并运行连接器安装命令。${command('connector', ctx.installCommand())}</li><li>重启 AI 客户端，点击“连接 AI”。浏览器询问本地网络访问时，选择允许。</li></ol>
+      <p class="connect-note">模型在 AI 客户端中选择；审稿时保持工作台页面打开。</p>
+      <details class="connect-more"><summary>其他客户端与 Mac</summary><p>支持 MCP 的客户端可手动添加 stdio 服务：命令填 <code>node</code>，参数填连接器的完整路径。</p><a href="./zhigao-connector.mjs" download="zhigao-connector.mjs">下载连接器</a><p>Mac：在终端运行以下命令，再重启客户端。</p>${command('mac', ctx.macCommand())}</details>
+      <details class="connect-more"><summary>连接后仍无法使用</summary><p>客户端找不到知稿工具：重启客户端或重新加载 MCP。连接器未运行：重新执行安装命令。浏览器拦截本地网络：在网站设置中允许本地网络访问，再刷新页面。</p></details>
+      <div class="connect-actions">${button('agent-on', ctx.agent.state === 'online' ? '重新连接' : '连接 AI')}${ctx.agent.state !== 'off' ? button('agent-off', '断开 AI') : ''}</div>`;
+  }
+  function feishuGuide() {
+    const needsInstall = ['unknown', 'missing', 'config'].includes(feishu.state);
+    return `<p>在电脑的 PowerShell 或终端中完成设置。</p>
+      <details class="connect-more" ${needsInstall ? 'open' : ''}><summary>首次使用：安装与配置</summary><ol class="connect-steps"><li>安装飞书 CLI（需先安装 Node.js）。${command('install', FEISHU_COMMANDS.install)}</li><li>配置飞书应用，按终端提示完成；已有应用可直接绑定。${command('config', FEISHU_COMMANDS.config)}</li></ol><p>如果公司限制创建应用，请联系飞书管理员协助配置。</p></details>
+      <ol class="connect-steps"><li>运行授权命令，在打开的飞书页面登录并确认。${command('login', FEISHU_COMMANDS.login)}</li><li>终端提示登录成功后，回到这里点击“检查连接”。</li></ol>
+      <details class="connect-more"><summary>已登录，仍不能同步</summary><p>提示缺少权限：重新运行授权命令；若应用权限未开通，请管理员在飞书应用后台开通。表格打不开：请所有者给当前账号查看或编辑权限。知稿支持飞书电子表格及其知识库链接。</p><p>更换电脑或登录过期时，重新完成登录即可。</p></details>
+      <p class="connect-note">暂不接入也可在飞书同步页粘贴表格，后续再连接。</p>`;
+  }
+  function row(key, title, label, description, action, guide) {
+    const open = expanded === key;
+    return `<section class="connect-row" data-connection="${key}"><div class="connect-row-head"><div class="connect-copy"><h3>${title}<span class="connect-status" data-status="${key}" role="status">${esc(label)}</span></h3><p>${esc(description)}</p></div><div class="connect-actions">${action}${button('connect-expand', open ? '收起' : '设置', `data-section="${key}" aria-expanded="${open}" aria-controls="connect-guide-${key}"`)}</div></div><div id="connect-guide-${key}" class="connect-guide" ${open ? '' : 'hidden'}>${guide}</div></section>`;
+  }
+  function body() {
+    const p = ctx.project(), folder = ctx.folder(p.id), folderState = ctx.folderState(p.id), [aiLabel, aiDesc] = aiInfo();
+    const issue = feishu.code ? feishuIssue(feishu.code) : null;
+    const fsLabel = checking ? '检查中…' : feishu.state === 'ready' ? '已登录' : issue?.[1] || '未检查';
+    const fsDesc = feishu.state === 'ready' ? '飞书账号已就绪，关联表格后即可读取与同步。' : issue?.[2] || '连接飞书账号，读取表格并同步审稿进度。';
+    const folderLabel = !folderSupported() ? '使用下载' : folderState === 'granted' ? '已关联' : folder ? '待授权' : '未设置';
+    const folderDesc = folder ? folder.name : '按当前品牌保存原件、标红稿和意见单。';
+    return `<p class="connect-intro">按需连接，用到时再设置。</p>` +
+      row('ai', 'AI 审稿', aiLabel, aiDesc, ['off','offline'].includes(ctx.agent.state) ? button('agent-on', '连接 AI') : '', aiGuide()) +
+      row('feishu', '飞书同步', fsLabel, fsDesc, button('connect-check', checking ? '检查中…' : '检查连接', checking ? 'disabled' : ''), feishuGuide() + (['connector','update','origin'].includes(feishu.state) ? button('connect-expand', '设置连接器', 'data-section="ai"') : '')) +
+      row('folder', '本地归档', folderLabel, folderDesc, folderSupported() ? button(folder && folderState !== 'granted' ? 'connect-folder-grant' : 'connect-folder-pick', folder ? folderState === 'granted' ? '更换文件夹' : '授权文件夹' : '选择文件夹', `data-pid="${esc(p.id)}"`) : '', `<p>为“${esc(p.name)}”选择一个文件夹，并在浏览器提示中允许保存。审稿完成后会自动归档。</p><p>浏览器再次询问时，点击“授权文件夹”。暂不设置时，可从稿件列表导出文件。</p><p>本地归档请使用桌面版 Edge 或 Chrome；其他浏览器可下载导出文件。</p>`) +
+      `<details class="connect-more connect-basics"><summary>其他功能怎么使用</summary><p>上传稿件、品牌资料、口径、批注和导出文件，直接在工作台操作。AI 审稿和反馈提取需要连接 AI；飞书提炼还需登录飞书。</p><p>Word、Excel 和文字稿可审核并导出修改稿；PDF、视频可查看并添加意见。图片和扫描件需先转成文字。</p><p>使用 AI：上传稿件 → 复制审稿提示词 → 粘贴到已连接的客户端 → 返回工作台查看结果。</p></details>`;
+  }
+  function refresh() {
+    const host = document.querySelector('#connections-body');
+    if (!host) return;
+    const focused = document.activeElement, selection = getSelection();
+    if (focused?.tagName === 'TEXTAREA' && host.contains(focused) || selection && !selection.isCollapsed && host.contains(selection.anchorNode)) return;
+    const key = focused?.dataset?.key, action = focused?.dataset?.action, section = focused?.dataset?.section;
+    const opened = [...host.querySelectorAll('details')].map(d => d.getClientRects().length ? d.open : null), scroll = host.parentElement.scrollTop;
+    host.innerHTML = body();
+    host.querySelectorAll('details').forEach((d,i) => { if (opened[i] != null) d.open = opened[i]; });
+    if (action) [...host.querySelectorAll('[data-action]')].find(b => b.dataset.action === action && b.dataset.key === key && b.dataset.section === section)?.focus({preventScroll:true});
+    host.parentElement.scrollTop = scroll;
+  }
+  function open(section = '') {
+    expanded = section;
+    ctx.modal('连接与授权', `<div id="connections-body">${body()}</div>`, ctx.btn('close-modal', '完成', 'primary'));
+  }
+  async function check() {
+    if (checking) return;
+    checking = true; refresh();
+    try { feishu = await ctx.checkFeishu(); }
+    catch (e) { const issue = feishuIssue(e.code); feishu = {state:issue[0], code:e.code || 'FEISHU_NETWORK'}; }
+    finally { checking = false; refresh(); }
+  }
+  function showIssue(e) {
+    if (!/^(FEISHU_|CONNECTOR_)/.test(e.code || '')) return false;
+    feishu = {state:feishuIssue(e.code)[0], code:e.code}; open('feishu'); return true;
+  }
+  async function handle(action, b) {
+    if (!action?.startsWith('connect-')) return false;
+    if (action === 'connect-open') open(b.dataset.section || '');
+    if (action === 'connect-expand') { expanded = expanded === b.dataset.section ? '' : b.dataset.section; refresh(); }
+    if (action === 'connect-check') await check();
+    if (action === 'connect-copy') {
+      const field = document.getElementById('connect-cmd-' + b.dataset.key);
+      try { await navigator.clipboard.writeText(field.value); ctx.toast('已复制，在终端粘贴并运行。'); }
+      catch { field.focus(); field.select(); ctx.toast('请复制已选中的命令。'); }
+    }
+    if (action === 'connect-folder-pick' || action === 'connect-folder-grant') { await ctx.folderAction(action.endsWith('pick') ? 'folder-pick' : 'folder-grant', b); refresh(); }
+    return true;
+  }
+  function updateFeishu(status) {
+    if (!status || !['ready','missing','config','auth','scope','access','error'].includes(status.state)) return;
+    feishu = {state:status.state, ...(status.code ? {code:status.code} : {})}; refresh();
+  }
+  return {open, refresh, handle, showIssue, updateFeishu};
+}

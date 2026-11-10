@@ -16,11 +16,12 @@ import readline from 'node:readline';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
-const VERSION = '1.7.0';
+const VERSION = '1.8.0';
 const PORT = Number(process.env.ZHIGAO_PORT) || 47821;
 const HOME = path.join(os.homedir(), '.zhigao');
 const SELF = fileURLToPath(import.meta.url);
 const INSTALLED = path.join(HOME, 'zhigao-connector.mjs');
+const SITE = 'https://17796919413.github.io/zhigao-desk/';
 const ORIGINS = new Set(['https://17796919413.github.io', ...String(process.env.ZHIGAO_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)]);
 const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
 const log = (...a) => process.stderr.write('[zhigao] ' + a.join(' ') + '\n');
@@ -45,7 +46,7 @@ function larkCliScript() {
     }
   }
   const found = candidates.map(x => path.resolve(x)).find(x => fs.existsSync(x));
-  if (!found) throw Error('这台电脑没有找到飞书官方 lark-cli。请先在本机完成 lark-cli 安装和用户授权。');
+  if (!found) throw Object.assign(Error('请先安装飞书 CLI。'), {code:'FEISHU_CLI_MISSING'});
   return found;
 }
 
@@ -59,17 +60,22 @@ async function larkJson(args,input=null) {
     child.stderr.on('data',s=>{if(stderr.length<200000)stderr+=s;});child.on('error',e=>{error=e;});
     child.on('close',status=>{clearTimeout(timer);resolve({stdout,stderr,status,error});});
   });
-  if (r.error) throw Error(r.error.code === 'ETIMEDOUT' ? '飞书接口请求超时。' : '无法启动本机 lark-cli。');
+  if (r.error) throw Object.assign(Error(r.error.code === 'ETIMEDOUT' ? '飞书接口请求超时。' : '无法启动本机 lark-cli。'),{code:'FEISHU_NETWORK'});
   let response;
   try { response = JSON.parse((r.stdout || r.stderr || '').trim()); }
   catch { throw Error(r.status ? '飞书接口请求失败，请检查本机 lark-cli 配置和授权。' : '飞书 CLI 返回了无法识别的数据。'); }
   const authStatus = args[0] === 'auth' && args[1] === 'status'
-    && response?.identity === 'user' && typeof response.verified === 'boolean'
-    && typeof response.identities?.user?.status === 'string'
-    && typeof response.identities.user.tokenStatus === 'string';
+    && typeof response?.identities === 'object' && response.identities !== null;
   if (r.status !== 0 || (response?.ok !== true && !authStatus)) {
     const message = String(response?.error?.message || '请求未成功').replace(/[\r\n]+/g, ' ').slice(0, 300);
-    throw Error(`飞书接口请求失败：${message}`);
+    const err = response?.error || {}, kind = `${err.type || ''} ${err.subtype || ''} ${message}`;
+    const code = err.missing_scopes?.length || /missing.?scope|scope.*不足/i.test(kind) ? 'FEISHU_SCOPE'
+      : /config|app.?id|app.?secret|未配置|应用配置/i.test(kind) ? 'FEISHU_CONFIG'
+      : /token|login|unauthenticated|authentication|未登录|登录过期/i.test(kind) ? 'FEISHU_AUTH'
+      : /permission|forbidden|access.?denied|权限|无权|无访问/i.test(kind) ? 'FEISHU_ACCESS' : 'FEISHU_REQUEST';
+    // 不把 CLI 的原始配置或令牌内容送到网页。
+    const labels={FEISHU_SCOPE:'请补充飞书授权后重试。',FEISHU_CONFIG:'请先配置飞书应用。',FEISHU_AUTH:'请重新登录飞书。',FEISHU_ACCESS:'当前账号无法访问这张表，请检查表格权限。',FEISHU_REQUEST:'飞书请求未完成，请检查网络和表格链接后重试。'};
+    throw Object.assign(Error(labels[code]),{code});
   }
   return response;
 }
@@ -77,8 +83,19 @@ async function larkJson(args,input=null) {
 async function requireFeishuUser() {
   const r = await larkJson(['auth', 'status', '--json', '--verify']), user = r.identities?.user;
   if (r.identity !== 'user' || r.verified !== true || user?.status !== 'ready' || user?.tokenStatus !== 'valid')
-    throw Error('本机飞书用户授权未就绪或已过期。请在这台电脑检查 lark-cli 的用户身份与授权后重试。');
+    throw Object.assign(Error('请登录飞书账号后重试。'),{code:'FEISHU_AUTH'});
   return {identity: 'user', userName: String(user.userName || '飞书用户').slice(0, 80)};
+}
+
+async function feishuConnectionStatus() {
+  try {
+    await requireFeishuUser();
+    return {state:'ready',checkedAt:new Date().toISOString()};
+  } catch(e) {
+    const code=e.code||'FEISHU_NETWORK';
+    const state=({FEISHU_CLI_MISSING:'missing',FEISHU_CONFIG:'config',FEISHU_AUTH:'auth',FEISHU_SCOPE:'scope',FEISHU_ACCESS:'access'})[code]||'error';
+    return {state,code,checkedAt:new Date().toISOString()};
+  }
 }
 
 function feishuUrl(raw) {
@@ -451,6 +468,8 @@ async function feishuAction(body) {
 }
 
 const TOOLS = [
+  {name:'zhigao_setup_status',description:'接通知稿、首次配置或排查渠道时优先调用。无需网页已连接即可检查本机连接器、飞书CLI和登录状态；网页在线时补充当前品牌归档与表格关联状态。不安装、不登录、不写入业务数据。',inputSchema:{type:'object',properties:{verifyFeishu:{type:'boolean',description:'是否实际检查飞书登录，默认false；需要检查授权时设为true。'}}}},
+  {name:'zhigao_open_setup',description:'用户要求接通渠道时，在已有连接设置面板展开AI、飞书或归档步骤。不代替用户选择文件夹或确认登录。',inputSchema:{type:'object',properties:{section:{type:'string',enum:['ai','feishu','folder']}},required:['section']}},
   {name:'zhigao_reopen_review',description:'用户要求继续、补漏或重审时使用。返回新凭据及已有建议；本次应提交完整替换结果，旧结果保留到新结果保存成功。',inputSchema:{type:'object',properties:{docId:{type:'string'},batchId:{type:'string'}},required:['docId']}},
   ...['renew','release'].map(action=>({name:'zhigao_'+action+'_review',description:action==='renew'?'在 leaseExpiresAt 前续租15分钟；不改变凭据。':'主动释放当前审稿；之后 retry:true 可重新领取。',inputSchema:{type:'object',properties:{docId:{type:'string'},batchId:{type:'string'},reviewToken:{type:'string'},reason:{type:'string'}},required:['docId','reviewToken']}})),
   {name:'zhigao_update_project',description:'用户明确要求时，保存当前指定品牌的资料库、项目笔记和规则。project 默认当前项目；明确指定时必须与网页所选项目一致。支持按 id 更新并保留历史；同名新增须显式 allowDuplicate。不能用于审稿建议、品牌通过或稿件流转。写入后工作台回读 localStorage 核对。',inputSchema:{type:'object',properties:{project:{type:'string',description:'当前项目名称或 id；省略则使用网页当前项目'},notes:{type:'string',description:'完整替换项目笔记；不修改时省略'},library:{type:'array',description:'新增或按 id 更新的完整资料条目',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},kind:{type:'string',enum:['Brief','产品资料','口径与禁用词','品牌反馈汇总','其他']},text:{type:'string'},source:{type:'string'},active:{type:'boolean'},allowDuplicate:{type:'boolean',description:'明确新增同名资料时设为 true'}},required:['title','kind','text']}},rules:{type:'array',description:'新增或按 id 更新的完整规则；替代旧规则用 supersedes',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},description:{type:'string'},enabled:{type:'boolean'},find:{type:'string'},replace:{type:'string'},action:{type:'string',enum:['check','replace']},source:{type:'string'},supersedes:{type:'array',items:{type:'string'}},allowDuplicate:{type:'boolean',description:'明确新增同名口径时设为 true'}},required:['title','description']}},expected:{type:'object',description:'可选：直接传入 zhigao_get_project 返回的 expected 对象，或其中需要校验的字段'}}}},
@@ -475,7 +494,7 @@ const TOOLS = [
   {name: 'zhigao_submit_feedback_items', description: '提交整理好的品牌反馈条目。条目全部进入“待确认”，由用户确认后才计入进度；品牌原话保持不变。',
     inputSchema: {type: 'object', properties: {docId: {type: 'string'}, result: {description: '{"items":[{"text","quote","scope":"this|project"}]}，可传对象或 JSON 字符串'}}, required: ['docId', 'result']}}
 ];
-const INSTRUCTIONS = '知稿是品牌内容审稿工作台，运行在用户浏览器里。先调用 zhigao_status 确认网页已连接；审稿流程：zhigao_list_tasks 找稿件 → zhigao_get_review_brief 取指令 → 按指令审稿 → zhigao_submit_review 提交。' +
+const INSTRUCTIONS = '知稿是品牌内容审稿工作台，运行在用户浏览器里。用户要求连接/打通全部功能时，先调用 zhigao_setup_status，按 '+SITE+'AGENT_SETUP.md 完成接入；已有配置复用，需用户操作的授权才提示。安装完成不等于全部功能可用。审稿先调用 zhigao_status 确认网页已连接；审稿流程：zhigao_list_tasks 找稿件 → zhigao_get_review_brief 取指令 → 按指令审稿 → zhigao_submit_review 提交。' +
   '用户明确要把资料、项目笔记或品牌规则放进知稿时，调用 zhigao_update_project；资料原文放 library，完整新口径放 rules。按 id 更新会保留历史，supersedes 明确替代关系；保存后重新 get_project 核对 libraryEntries、allRules 和 expected。不得借此操作稿件、代替用户采纳建议或记录品牌通过。' +
   '用户说提炼时先调用 zhigao_extract_feishu({url}) 获取草稿，使用当前客户端模型核对名单、分组、档期、产品及 evidence；不把子表联系人当内容负责人，不凭计划日期填审核通过。需要修正时把完整 reviewedEntries 交给 zhigao_publish_feishu_extraction；没有修正可只传 draftId。用户要模拟对比时只读草稿，不新建云端表。只有回读成功并返回 document.url 才可说已生成。用户说审稿并同步时，审稿后调用 zhigao_prepare_feishu_sync 展示同步差异，明确写入仍待网页人工确认。不得声称已同步，除非网页已经确认且写入回读成功。' +
   '批量审稿：zhigao_create_review_batch → 对 queued 稿件逐份 get_review_brief（带 batchId）→ 使用当前客户端模型审稿 → submit_review（带 batchId 和返回的 reviewToken）。单份异常用 zhigao_fail_review 记原因并继续其他稿件；完成后 get_review_batch 核对并汇报成功、失败、中断和跳过数，以及工作台首页查看位置。续审失败或中断稿件时 get_review_brief 传 retry:true。逐份读完整篇、落实全部可执行修改后一次提交，不因正文长而降级为提醒。长正文用 patches。校验失败依错误位置修正后用原凭据重试；最多连续修正3次，同一原因仍失败则 fail_review 记录原因并继续下一份，禁止用删减修改换成功。TOKEN_EXPIRED 用 retry:true 重取并核对 snapshot；不能猜测或改写 reviewToken。接近 leaseExpiresAt 用 renew_review。用户要求补漏可 reopen_review。warnings 用于需品牌确认的事实/授权；未落实的修改才放 blockingWarnings。不得调用外部模型或读取登录凭据；用户没明确要求重审时不传 rereview:true。' +
@@ -514,7 +533,7 @@ const clientList = () => { const now = Date.now(); for (const [k, c] of hub.clie
 
 async function hubDispatch(name, args, client) {
   for (let i = 0; !pageAlive() && i < 16; i++) await new Promise(r => setTimeout(r, 500)); // 中转刚切换时等网页重连
-  if (!pageAlive()) throw Error('知稿工作台网页没有连接。请让用户在浏览器打开工作台，点右上角“AI 连接”并保持页面开着，然后重试。');
+  if (!pageAlive()) throw Error('知稿工作台网页没有连接。请让用户在浏览器打开工作台，点右上角“连接与授权”并保持页面开着，然后重试。');
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
     const timer = setTimeout(() => { hub.inflight.delete(id); hub.queue = hub.queue.filter(c => c.id !== id); reject(Error('工作台网页 300 秒内没有响应，请确认页面仍然开着。')); }, 300000);
@@ -546,10 +565,11 @@ async function onRequest(req, res) {
       if (req.method !== 'POST') return send(res, 405, {error: 'method'}, origin);
       if (url.pathname === '/page/feishu') {
         // 飞书读写比 AI 连接权限更敏感：只接受部署来源或用户明确配置的来源。
-        if (!ORIGINS.has(origin)) return send(res, 403, {error: '此网页来源未获本机飞书适配器授权'});
+        if (!ORIGINS.has(origin)) return send(res, 403, {error: '请从已配置的工作台网址打开。',code:'CONNECTOR_ORIGIN'}, origin);
         const body = await readBody(req, 512 * 1024);
+        if (body.action === 'status') return send(res, 200, {ok:true,data:await feishuConnectionStatus()}, origin);
         try { return send(res, 200, {ok: true, data: await feishuQueued(body)}, origin); }
-        catch (e) { return send(res, 400, {ok: false, error: String(e.message || e).slice(0, 500)}, origin); }
+        catch (e) { return send(res, 400, {ok: false, error: String(e.message || e).slice(0, 500),code:e.code}, origin); }
       }
       if (url.pathname === '/page/poll') {
         const body = await readBody(req, 64 * 1024);
@@ -596,10 +616,10 @@ function startHub() {
 }
 
 // ---------- 转发（中转已被别的进程占用时） ----------
-function agentPost(p, data) {
+function agentPost(p, data, timeout = 310000) {
   return new Promise((resolve, reject) => {
     const body = Buffer.from(JSON.stringify(data));
-    const req = http.request({host: '127.0.0.1', port: PORT, path: p, method: 'POST', timeout: 310000,
+    const req = http.request({host: '127.0.0.1', port: PORT, path: p, method: 'POST', timeout,
       headers: {'Content-Type': 'application/json', 'Content-Length': body.length, 'x-zhigao-secret': hubSecret()}}, res => {
       const chunks = []; res.on('data', c => chunks.push(c));
       res.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(Error('中转返回格式错误')); } });
@@ -627,6 +647,7 @@ async function ensureRole() {
   await agentPost('/agent/hello', {key: me.key, name: me.name}).catch(() => {});
 }
 async function callTool(name, args) {
+  if(name === 'zhigao_setup_status')return setupStatus(args);
   const limitBytes=4*1024*1024;
   if(Buffer.byteLength(JSON.stringify({name,args,client:me.name}),'utf8')>limitBytes)throw Object.assign(Error('请求体超过 4 MiB，请使用局部 patches 减少重复原文。'),{code:'PAYLOAD_TOO_LARGE',details:{limitBytes}});
   await ensureRole();
@@ -715,6 +736,101 @@ const CLIENTS = {
     },
     remove() { try { fs.unlinkSync(this.file()); return true; } catch { return false; } }}
 };
+// Agent bootstrap stays in this single downloadable file.
+const SETUP_CLIENTS = ['claude','codex','workbuddy','dsh','manual'];
+function setupArgs(argv) {
+  const opts={client:null,verifyFeishu:false,json:false};
+  for(let i=0;i<argv.length;i++){
+    const a=argv[i];
+    if(a==='--client'){const value=argv[++i];if(!SETUP_CLIENTS.includes(value))throw Error('请指定 --client claude|codex|workbuddy|dsh|manual。');opts.client=value;}
+    else if(a==='--verify-feishu')opts.verifyFeishu=true;
+    else if(a==='--json')opts.json=true;
+    else throw Error('不支持的接入参数。');
+  }
+  return opts;
+}
+function sameStdio(entry) {
+  return !!entry && /^(node|node\.exe)$/i.test(path.basename(String(entry.command||'')))
+    && Array.isArray(entry.args) && entry.args.length===1 && path.resolve(entry.args[0])===path.resolve(INSTALLED);
+}
+function clientSetupState(client) {
+  if(!SETUP_CLIENTS.includes(client))throw Error('不支持的客户端。');
+  if(client==='manual')return {client,state:'manual',detected:true};
+  if(client==='workbuddy'){
+    const f=CLIENTS.workbuddy.file();
+    if(!fs.existsSync(f))return {client,state:'not_configured',detected:CLIENTS.workbuddy.detect()};
+    try{const e=JSON.parse(fs.readFileSync(f,'utf8')).mcpServers?.zhigao;
+      return {client,detected:true,state:!e?'not_configured':sameStdio(e)&&e.disabled!==true?'configured':'conflict'};
+    }catch{return {client,detected:true,state:'invalid_config'};}
+  }
+  if(client==='dsh'){
+    const f=CLIENTS.dsh.file();
+    if(!fs.existsSync(f))return {client,detected:CLIENTS.dsh.detect(),state:'not_configured'};
+    const text=fs.readFileSync(f,'utf8');
+    return {client,detected:true,state:text.includes(JSON.stringify(INSTALLED))&&text.includes('serverName: zhigao')?'patch_ready':'conflict'};
+  }
+  if(!CLIENTS[client].detect())return {client,detected:false,state:'not_detected'};
+  const result=run(client,['mcp','get','zhigao',...(client==='codex'?['--json']:[])]);
+  if(!result.ok)return {client,detected:true,state:/not found|does not exist|no .*server|not configured|不存在|找不到|no mcp server/i.test(result.out)?'not_configured':'unverified'};
+  if(client==='codex'){
+    try{const e=JSON.parse(result.out);return {client,detected:true,state:sameStdio(e.transport||e)&&e.enabled!==false?'configured':'conflict'};}
+    catch{return {client,detected:true,state:'unverified'};}
+  }
+  return {client,detected:true,state:result.out.includes(INSTALLED)?'configured':'conflict'};
+}
+function installedVersion(){
+  try{return fs.readFileSync(INSTALLED,'utf8').match(/const VERSION = '([^']+)'/)?.[1]||'unknown';}
+  catch{return null;}
+}
+async function setupStatus({verifyFeishu=false,client=null}={}) {
+  if(typeof verifyFeishu!=='boolean')throw Error('verifyFeishu 必须为布尔值。');
+  if(client!==null&&!SETUP_CLIENTS.includes(client))throw Error('不支持的客户端。');
+  const h=await health(),installed=installedVersion();
+  let feishu;
+  try{larkCliScript();feishu=verifyFeishu?await feishuConnectionStatus():{state:'installed',login:'not_checked'};}
+  catch(e){feishu={state:'missing',code:e.code||'FEISHU_CLI_MISSING'};}
+  const report={schemaVersion:1,version:VERSION,
+    connector:{installedVersion:installed,state:!installed?'not_installed':installed===VERSION?'installed':'update_needed',runningVersion:h?.app==='zhigao'?h.version:null},
+    ai:{state:h?.app!=='zhigao'?'not_running':!h.page?'page_not_connected':h.clients?.length?'connected':'waiting_for_client',clients:h?.app==='zhigao'?h.clients:[]},
+    feishu,browser:{state:'not_connected'},
+    ...(client?{client:clientSetupState(client)}:{}),
+    guide:SITE+'AGENT_SETUP.md',openUrl:SITE+'?connect=1',checkedAt:new Date().toISOString()};
+  if(h?.app==='zhigao'&&h.page){
+    try{const r=await agentPost('/agent/call',{name:'zhigao_setup_status',args:verifyFeishu?{feishuStatus:feishu}:{},client:me.name},12000);
+      report.browser=r.error?{state:'update_needed'}:r.result;
+    }catch{report.browser={state:'unavailable'};}
+  }
+  report.next=[];
+  if(report.connector.state!=='installed')report.next.push('运行 setup --client <当前客户端> --json。');
+  if(h?.version&&h.version!==VERSION)report.next.push('本机中转版本较旧，请重新连接客户端中的知稿 MCP。');
+  if(report.ai.state!=='connected')report.next.push('打开 openUrl；按客户端要求重新加载知稿 MCP。');
+  if(feishu.state!=='ready')report.next.push(feishu.state==='installed'?'使用 --verify-feishu 检查登录状态。':'按接入说明完成飞书安装、应用配置或账号授权。');
+  if(report.browser.archive?.state!=='granted')report.next.push('网页连接后，用 zhigao_open_setup 展开 folder，请用户选择或授权保存文件夹。');
+  return report;
+}
+async function setupClient(opts) {
+  if(!opts.client)throw Error('请用 --client 指定当前客户端；不自动修改其他客户端。');
+  const before=clientSetupState(opts.client);
+  if(['conflict','invalid_config','unverified'].includes(before.state))throw Object.assign(Error('已有知稿配置需要核对，请检查当前客户端的 MCP 设置后再继续。'),{code:'CLIENT_CONFIG_REVIEW'});
+  if(before.state==='not_detected')throw Object.assign(Error('未检测到客户端命令。桌面客户端可使用 --client manual 获取接入参数。'),{code:'CLIENT_NOT_FOUND'});
+  fs.mkdirSync(HOME,{recursive:true});
+  const data=fs.readFileSync(SELF),same=fs.existsSync(INSTALLED)&&fs.readFileSync(INSTALLED).equals(data);
+  if(!same&&path.resolve(SELF)!==path.resolve(INSTALLED)){
+    backup(INSTALLED);const tmp=INSTALLED+'.setup-'+crypto.randomUUID();fs.writeFileSync(tmp,data);fs.renameSync(tmp,INSTALLED);
+  }
+  let note='';
+  if(opts.client!=='manual'&&!['configured','patch_ready'].includes(before.state))note=CLIENTS[opts.client].add()||'';
+  const after=clientSetupState(opts.client);
+  if(opts.client!=='manual'&&!['configured','patch_ready'].includes(after.state))throw Object.assign(Error('客户端配置尚未验证，请检查 MCP 设置。'),{code:'CLIENT_NOT_VERIFIED'});
+  return {ok:true,version:VERSION,connector:same?'unchanged':'installed',client:after,
+    ...(opts.client==='manual'?{mcp:{type:'stdio',command:NODE,args:[INSTALLED]}}:{}),
+    ...(note?{note}:{}),next:'重新加载当前客户端的知稿 MCP，打开 openUrl，再调用 zhigao_setup_status。',openUrl:SITE+'?connect=1',guide:SITE+'AGENT_SETUP.md'};
+}
+async function setupCli(cmd,argv){
+  try{const opts=setupArgs(argv);const result=cmd==='setup'?await setupClient(opts):await setupStatus(opts);console.log(JSON.stringify(result,null,2));}
+  catch(e){console.log(JSON.stringify({ok:false,code:e.code||'SETUP_FAILED',message:e.code?e.message:'接入未完成，请核对命令参数、客户端状态与文件权限。'}));process.exitCode=1;}
+}
+
 function install(which) {
   fs.mkdirSync(HOME, {recursive: true});
   if (path.resolve(SELF) !== path.resolve(INSTALLED)) fs.copyFileSync(SELF, INSTALLED);
@@ -727,7 +843,7 @@ function install(which) {
     try { const note = c.add(); console.log(`✓ ${c.label}：已接入${note ? '\n  ' + note : ''}`); }
     catch (e) { console.log(`✗ ${c.label}：接入失败 ${String(e.message).split('\n')[0]}`); }
   }
-  console.log(`\n其他支持 MCP 的客户端（Cherry Studio、Trae、Cursor 等）手动添加 stdio 服务：\n  命令 ${NODE}\n  参数 ${INSTALLED}\n\n下一步：重启 AI 客户端；在浏览器打开知稿工作台，点右上角“AI 连接”。然后对 AI 说“用知稿审一下待处理的稿件”。`);
+  console.log(`\n其他支持 MCP 的客户端（Cherry Studio、Trae、Cursor 等）手动添加 stdio 服务：\n  命令 ${NODE}\n  参数 ${INSTALLED}\n\n下一步：重启 AI 客户端；在浏览器打开知稿工作台，点右上角“连接与授权”。然后对 AI 说“用知稿审一下待处理的稿件”。`);
 }
 function uninstall(which) {
   for (const k of which ? [which] : Object.keys(CLIENTS)) { const c = CLIENTS[k]; if (!c) continue; try { console.log(`${c.label}：${c.remove() ? '已移除' : '无需移除'}`); } catch (e) { console.log(`${c.label}：移除失败 ${e.message}`); } }
@@ -738,11 +854,12 @@ export {parseExecutionSheet,buildExecutionData,refinedSheets,executionDate,extra
 if(process.argv[1]&&path.resolve(process.argv[1])===SELF){
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === 'install') install(arg);
+else if (cmd === 'setup' || cmd === 'doctor') setupCli(cmd,process.argv.slice(3));
 else if (cmd === 'uninstall') uninstall(arg);
 else if (cmd === 'status') health().then(h => console.log(h ? `中转运行中 · 网页${h.page ? '已连接' : '未连接'} · AI 客户端：${h.clients.join('、') || '无'}` : '中转未运行（AI 客户端启动后会自动拉起）'));
 else if (cmd === 'hub') startHub().then(ok => { if (!ok) { log('端口已被占用'); process.exit(1); } log('中转运行中，端口', PORT, '（Ctrl+C 退出）'); });
 else if (cmd === '--version' || cmd === '-v') console.log(VERSION);
-else if (cmd === 'help' || cmd === '--help' || cmd === '-h') console.log('用法：node zhigao-connector.mjs [install [claude|codex|workbuddy|dsh] | uninstall | status | hub]\n不带参数时作为 MCP 服务运行（由 AI 客户端启动）。');
+else if (cmd === 'help' || cmd === '--help' || cmd === '-h') console.log('用法：node zhigao-connector.mjs [setup --client <claude|codex|workbuddy|dsh|manual> --json | doctor [--client <client>] [--verify-feishu] --json | install [client] | uninstall | status | hub]\n不带参数时作为 MCP 服务运行（由 AI 客户端启动）。接入说明：'+SITE+'AGENT_SETUP.md');
 else if (cmd) { console.log(`未知命令：${cmd}，见 --help`); process.exit(1); }
 else serveMcp();
 

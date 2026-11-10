@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "zhigao",
+  "version": "1.8.0",
+  "guide": "./AGENT_SETUP.md",
+  "connector": "./zhigao-connector.mjs",
+  "connectPage": "./?connect=1",
+  "runtime": {"name": "node", "minimumMajor": 18},
+  "clients": ["claude", "codex", "workbuddy", "dsh", "manual"],
+  "commands": {
+    "inspect": ["node", "zhigao-connector.mjs", "doctor", "--json"],
+    "configure": ["node", "zhigao-connector.mjs", "setup", "--client", "<current-client>", "--json"],
+    "verify": ["node", "zhigao-connector.mjs", "doctor", "--verify-feishu", "--json"]
+  },
+  "mcpTools": {"status": "zhigao_setup_status", "openExistingSettings": "zhigao_open_setup"},
+  "feishu": {
+    "package": "@larksuite/cli",
+    "identity": "user",
+    "domains": ["sheets", "drive", "wiki"],
+    "login": ["lark-cli", "auth", "login", "--domain", "sheets", "--domain", "drive", "--domain", "wiki", "--no-wait", "--json"],
+    "completeLogin": ["lark-cli", "auth", "login", "--device-code", "<current-device-code>"],
+    "verify": ["lark-cli", "auth", "status", "--json", "--verify"]
+  },
+  "archive": {"scope": "current-browser-current-project", "mode": "browser-directory-picker", "userSelectionRequired": true},
+  "completion": {"ai": "page connected and current client can call zhigao_status", "feishu": "user login verified; target table access checked separately when supplied", "archive": "browser.archive.state is granted"}
+}
