@@ -55,7 +55,7 @@ export const SYNC_FIELDS=['outline','script','draft','date','publish','feedback'
 // 工作台这一侧“应该是什么”：✅ 只来自人工记录的品牌通过；图文没有脚本记为“/”。
 export function itemValues(item,docs){
  const v={};
- for(const [f,stage] of Object.entries(STAGE_FIELD)){if(!reviewStagesFor(item.kind).includes(stage)){v[f]='/';continue;}const d=docs.filter(x=>x.stage===stage).sort((a,b)=>String(b.updated).localeCompare(String(a.updated)))[0];v[f]=d&&flowOf(d).state==='passed'?'✅':d?.ai?'AI已审 · '+d.ai.changes.length+'处修改 · 待复核':'';}
+ for(const [f,stage] of Object.entries(STAGE_FIELD)){if(!reviewStagesFor(item.kind).includes(stage)){v[f]='/';continue;}const d=docs.filter(x=>x.stage===stage).sort((a,b)=>String(b.updated).localeCompare(String(a.updated)))[0];v[f]=d&&flowOf(d).state==='passed'?'✅':d?.ai?(d.ai.needsSupplement?'审核未完成 · ':'AI已审 · ')+d.ai.changes.length+'处修改 · 待复核':'';}
  const pb=item.publish||{};v.date=pb.date||'';v.publish=pb.status==='已发布'?'✅':'';
  const fb=docs.flatMap(d=>(d.fbItems||[]).filter(x=>x.status==='done'&&String(x.text||'').trim()).map(x=>({...x,stage:d.stage}))).sort((a,b)=>String(a.at).localeCompare(String(b.at)));
  v.feedback=fb.map(x=>`【${x.stage}】${x.text}`).join('；');v.feedbackText=fb.map(x=>x.text).join('；');

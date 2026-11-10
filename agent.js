@@ -7,7 +7,7 @@ import {reviewStagesFor,reviewStatus,pendingCount,flowOf,FLOW_STATES,itemProgres
 export const AGENT_PORT=47821;
 const HUB=`http://127.0.0.1:${AGENT_PORT}`;
 const KEY='zhigao-agent-v1';
-export const TOOL_LABELS={zhigao_update_project:'更新品牌资料与口径',zhigao_publish_feishu_extraction:'生成飞书精炼表',zhigao_extract_feishu:'提炼执行表',zhigao_prepare_feishu_sync:'准备同步核对',zhigao_create_review_batch:'建立审稿批次',zhigao_get_review_batch:'查询审稿批次',zhigao_fail_review:'记录审稿失败',zhigao_status:'查看状态',zhigao_list_tasks:'列出任务',zhigao_get_project:'读取项目规则',zhigao_open_task:'打开稿件',zhigao_get_review_brief:'读取审稿指令',zhigao_submit_review:'提交审稿建议',zhigao_get_feedback_brief:'读取品牌反馈',zhigao_submit_feedback_items:'提交反馈条目'};
+export const TOOL_LABELS={zhigao_reopen_review:'继续审核',zhigao_renew_review:'延长审稿时间',zhigao_release_review:'释放审稿',zhigao_update_project:'更新品牌资料与口径',zhigao_publish_feishu_extraction:'生成飞书精炼表',zhigao_extract_feishu:'提炼执行表',zhigao_prepare_feishu_sync:'准备同步核对',zhigao_create_review_batch:'建立审稿批次',zhigao_get_review_batch:'查询审稿批次',zhigao_fail_review:'记录审稿失败',zhigao_status:'查看状态',zhigao_list_tasks:'列出任务',zhigao_get_project:'读取项目规则',zhigao_open_task:'打开稿件',zhigao_get_review_brief:'读取审稿指令',zhigao_submit_review:'提交审稿建议',zhigao_get_feedback_brief:'读取品牌反馈',zhigao_submit_feedback_items:'提交反馈条目'};
 const WRITES=new Set(['zhigao_update_project','zhigao_submit_review','zhigao_submit_feedback_items']);
 
 export const agent={state:'off',clients:[],log:[],version:''};
@@ -46,18 +46,23 @@ const tools={
  async zhigao_publish_feishu_extraction({draftId,title,reviewedEntries}){return {ok:true,document:await ctx.publishExtraction(draftId,title,reviewedEntries)};},
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.7.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=String(project||'').toLowerCase()==='all',p=all?null:findProject(project);if(!all&&!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
   return items.filter(it=>all||it.projectId===p.id).map(it=>{const docs=tasks.filter(t=>t.itemId===it.id),pr=itemProgress(it,docs);return{taskId:it.id,project:pn(it.projectId),author:it.author,platform:it.platform,kind:it.kind,title:it.title,currentStage:pr.current,status:pr.label,waitingOn:WAIT[waitingOn(it,pr)],waitKey:waitingOn(it,pr),publishDate:it.publish?.date||'',documents:docs.sort((a,b)=>reviewStagesFor(it.kind).indexOf(a.stage)-reviewStagesFor(it.kind).indexOf(b.stage)).map(docRow)};})
    .filter(r=>(!wait||r.waitKey===wait)&&(!q||[r.author,r.title,r.platform].join(' ').toLowerCase().includes(q)));},
- zhigao_get_project({project}={}){const p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
-  return{id:p.id,name:p.name,ended:p.status==='ended',notes:p.notes||'',rules:effectiveRules(p),precedence:'最新生效口径优先于旧资料；仅适用于当前品牌项目',currentRules:currentRulesText(p),library:libraryText(p),libraryEntries:structuredClone(p.library||[]),allRules:structuredClone(p.rules||[]),expected:structuredClone({notes:p.notes||'',library:p.library||[],rules:p.rules||[]})};},
+ zhigao_get_project({project,sections}={}){const p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
+  const fields={notes:()=>p.notes||'',rules:()=>effectiveRules(p),currentRules:()=>currentRulesText(p),library:()=>libraryText(p),libraryEntries:()=>structuredClone(p.library||[]),allRules:()=>structuredClone(p.rules||[]),expected:()=>structuredClone({notes:p.notes||'',library:p.library||[],rules:p.rules||[]})};
+  if(sections!==undefined&&(!Array.isArray(sections)||sections.some(k=>!Object.hasOwn(fields,k))))throw Error('sections 含不支持的字段。');
+  return {id:p.id,name:p.name,ended:p.status==='ended',precedence:'最新生效口径优先于旧资料；仅适用于当前品牌项目',libraryCount:(p.library||[]).length,ruleCount:effectiveRules(p).length,...Object.fromEntries((sections||['notes','rules','libraryEntries']).map(k=>[k,fields[k]()]))};},
  async zhigao_open_task({docId}){docOf(docId);await ctx.open(docId);return{ok:true,message:'已在用户的工作台上打开这份稿件。'};},
  zhigao_create_review_batch:args=>reviewService.zhigao_create_review_batch(args),
  zhigao_get_review_batch:args=>reviewService.zhigao_get_review_batch(args),
  zhigao_fail_review:args=>reviewService.zhigao_fail_review(args),
+ zhigao_reopen_review:args=>reviewService.zhigao_reopen_review(args),
+ zhigao_renew_review:args=>reviewService.zhigao_renew_review(args),
+ zhigao_release_review:args=>reviewService.zhigao_release_review(args),
  zhigao_get_review_brief:args=>reviewService.zhigao_get_review_brief(args),
  zhigao_submit_review:args=>reviewService.zhigao_submit_review(args),
  zhigao_get_feedback_brief({docId}){const t=docOf(docId),f=flowOf(t),fb=f.feedback.at(-1);if(!fb)throw Error('这份稿件还没有记录品牌反馈原话。请让用户先在网页上“记录品牌反馈”。');
@@ -73,7 +78,7 @@ async function handle(call){
  const label=TOOL_LABELS[call.name]||call.name,at=new Date().toISOString();
  let res;
  try{const fn=tools[call.name];if(!fn)throw Error(`网页不支持工具 ${call.name}，请刷新工作台到最新版本。`);res={id:call.id,result:await fn(call.args||{})};agent.log.unshift({at,client:call.client,label,ok:true,...(res.result?.savedPath?{path:res.result.savedPath}:{})});}
- catch(e){res={id:call.id,error:e.message||String(e)};agent.log.unshift({at,client:call.client,label,ok:false,error:res.error});}
+ catch(e){res={id:call.id,error:e.message||String(e),errorCode:e.code||'REVIEW_ERROR',details:e.details||{}};agent.log.unshift({at,client:call.client,label,ok:false,error:res.error});}
  agent.log.length=Math.min(agent.log.length,30);
  if(WRITES.has(call.name)&&res.result)ctx.notify(`${call.client||'AI'} ${res.result.message}`);
  ctx.changed();
@@ -101,4 +106,6 @@ export async function startAgent(){
 }
 export function stopAgent(){remember(false);lockAbort?.abort();abort?.abort();running=false;set('off',{clients:[]});}
 
+export const withReviewLock=fn=>reviewService?reviewService.exclusive(fn):fn();
+export const forgetReviews=ids=>reviewService?.forget(ids);
 export async function createUIReviewBatch(docIds){if(!reviewService)throw Error("工作台尚未就绪，请稍后重试。");return reviewService.zhigao_create_review_batch({docIds});}

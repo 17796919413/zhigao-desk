@@ -2,8 +2,9 @@ import {esc} from './engine.js';
 
 // One writer per document. Persist each successful output so retries only write missing files.
 export function createDelivery(ctx){
- const running=new Map();
- async function original(t){if(t.originalSaved)return t.originalSaved;const file=t.originalFile instanceof Blob?t.originalFile:(t.buffer?new Blob([t.buffer]):t.fmt==='text'?new Blob([t.cells.map(c=>c.original).join('\n\n')],{type:'text/plain;charset=utf-8'}):null);if(!file||!ctx.available(t))return null;const path=await ctx.write(t,'orig',`第${t.flow?.round||1}轮-${t.filename}`,file);await ctx.save({...t,originalSaved:path});return path;}
+ const running=new Map(),originals=new Map();
+ async function writeOriginal(t){if(t.originalSaved)return t.originalSaved;const file=t.originalFile instanceof Blob?t.originalFile:(t.buffer?new Blob([t.buffer]):t.fmt==='text'?new Blob([t.cells.map(c=>c.original).join('\n\n')],{type:'text/plain;charset=utf-8'}):null);if(!file||!ctx.available(t))return null;const path=await ctx.write(t,'orig',`第${t.flow?.round||1}轮-${t.filename}`,file);const latest=ctx.get(t.id);if(!latest)throw Error('稿件已删除，停止归档。');await ctx.save({...latest,originalSaved:path});return path;}
+ function original(t){if(originals.has(t.id))return originals.get(t.id);const run=writeOriginal(t).finally(()=>originals.delete(t.id));originals.set(t.id,run);return run;}
  async function once(id){let t=ctx.get(id);if(!t?.ai)return null;const ai=t.ai,token=ai.at;const get=()=>{const latest=ctx.get(id);if(latest?.ai?.at!==token)throw Error('审稿结果已更新，请重新归档。');return latest;};
   async function state(value){t=get();await ctx.save({...t,ai:{...t.ai,archive:value}});ctx.refresh();}
   if(ai.archive?.state==='saved')return ai.saved?.path||ai.archive.paths?.[1]||null;
@@ -17,5 +18,5 @@ export function createDelivery(ctx){
  }
  function draft(t){if(running.has(t.id))return running.get(t.id);const run=once(t.id).finally(()=>running.delete(t.id));running.set(t.id,run);return run;}
  async function resume(projectId){for(const t of ctx.all().filter(t=>t.projectId===projectId)){try{if(t.ai&&t.ai.archive?.state!=='saved'&&!t.ai.saved?.path)await draft(t);else if(!t.originalSaved)await original(t);}catch{ /* The row carries the failure and retry action. */ }}ctx.refresh();}
- return {draft,original,resume};
+ return {draft,original,resume,isBusy:id=>running.has(id)||originals.has(id)};
 }

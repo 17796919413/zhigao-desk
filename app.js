@@ -1,3 +1,4 @@
+import {deleteContentRecords} from './content-delete.js';
 import {createWorkbench} from './workbench.js';
 import {createDelivery} from './review-delivery.js';
 import {planFeishuRemoval,commitFeishuRemoval,sameWorkbook} from './feishu-removal.js';
@@ -16,7 +17,7 @@ import {parseFeishuUrl,parseTable,FIELDS,autoMap,cellOf,normName,platformsOf,kin
 import {reviewStagesFor,reviewStatus,pendingCount,FLOW_STATES,flowOf,newFlow,applyFlow,nextRound,PUBLISH_STATES,PUBLISH_TONE,itemProgress,WAIT,waitingOn,daysToPublish,dueLabel,openFeedback,matchFilter,addFeedbackNote} from './model.js';
 import {EXEC_FIELDS,EXEC_LABELS,executionKey,validateExecutionRows,reviewExecutionRows,executionTask,seedRows,extractionDefaults} from './feishu-workflow.js';
 import {batchSummary,BATCH_STATES} from './review-batch.js';
-import {agent,initAgent,startAgent,stopAgent,feishuLocal,AGENT_PORT,createUIReviewBatch} from './agent.js';
+import {agent,initAgent,startAgent,stopAgent,feishuLocal,AGENT_PORT,createUIReviewBatch,withReviewLock,forgetReviews} from './agent.js';
 
 const $=s=>document.querySelector(s),clone=x=>structuredClone(x);
 const icons={grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',doc:'M6 3h8l4 4v14H6z M14 3v5h4 M9 12h6 M9 16h6',rules:'M6 4v16 M18 4v16 M3 9h6 M15 15h6 M12 4v16 M9 6h6',history:'M3 11a9 9 0 1 1 2 7 M3 4v7h7 M12 7v5l3 2',plus:'M12 5v14 M5 12h14',upload:'M12 16V3 M7 8l5-5 5 5 M4 15v6h16v-6',check:'M5 12l4 4L19 6',arrow:'M5 12h14 M14 7l5 5-5 5',down:'M12 3v13 M7 11l5 5 5-5 M4 17v4h16v-4',shield:'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6z M8 12l3 3 5-6',spark:'M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',close:'M6 6l12 12 M18 6L6 18',alert:'M12 3L2 21h20z M12 9v5 M12 17v1',mountain:'M2 20L9 6l5 9 3-5 5 10z M7 10l2 2 2-2',edit:'M4 16L16 4l4 4L8 20H4z M13 7l4 4',trash:'M3 6h18 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7',help:'M9 8a3 3 0 0 1 6 0c0 3-3 3-3 6 M12 17v1 M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20',folder:'M3 6h7l2 3h9v11H3z',sheet:'M4 4h16v16H4z M4 9h16 M4 14h16 M10 4v16'};
@@ -37,16 +38,16 @@ const date=s=>new Date(s).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',
 function openDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open('zhigao-desk',6);r.onupgradeneeded=()=>{for(const s of ['tasks','items','media','folders','batches','integrations'])if(!r.result.objectStoreNames.contains(s))r.result.createObjectStore(s,{keyPath:'id'});};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
 function dbOp(method,value,name='tasks'){return new Promise((resolve,reject)=>{const tx=db.transaction(name,method==='getAll'?'readonly':'readwrite'),store=tx.objectStore(name),r=value===undefined?store[method]():store[method](value);tx.oncomplete=()=>resolve(r.result);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
 // MCP 写入须确认数据库事务成功；失败不更新内存、不计完成。
-function persistAI(records){return new Promise((resolve,reject)=>{
+function persistAI(records,{required=[]}={}){return new Promise((resolve,reject)=>{
  if(!db)return reject(Error('浏览器数据库不可用，审稿结果未保存。'));
- const tx=db.transaction([...new Set(records.map(([store])=>store))],'readwrite');
- tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||Error('浏览器数据库写入失败。'));tx.onabort=()=>reject(tx.error||Error('浏览器数据库写入已取消。'));
- try{for(const [store,value] of records)tx.objectStore(store).put(value);}catch(e){tx.abort();reject(e);}
+ const tx=db.transaction([...new Set([...records.map(([store])=>store),...required.map(([store])=>store)])],'readwrite');let writeError;
+ tx.oncomplete=resolve;tx.onerror=()=>reject(writeError||tx.error||Error('浏览器数据库写入失败。'));tx.onabort=()=>reject(writeError||tx.error||Error('浏览器数据库写入已取消。'));
+ try{const write=()=>{for(const [store,value] of records)tx.objectStore(store).put(value);};let pending=required.length;if(!pending)write();else for(const [store,id] of required){const q=tx.objectStore(store).get(id);q.onsuccess=()=>{if(writeError)return;if(!q.result){writeError=Error('稿件或任务已删除，请刷新页面。');tx.abort();return;}if(!--pending)write();};}}catch(e){writeError=e;tx.abort();}
 });}
 function replaceBatch(b){const i=batches.findIndex(x=>x.id===b.id);if(i<0)batches.unshift(b);else batches[i]=b;}
 function refreshAIViews(){if(['home','history','item','review'].includes(page)&&!typing())render();}
 async function saveAgentBatch(b){await persistAI([['batches',b]]);replaceBatch(b);refreshAIViews();}
-async function commitAgentReview(t,b){const records=[['tasks',t]];if(b)records.push(['batches',b]);await persistAI(records);const old=tasks.find(x=>x.id===t.id);if(old)Object.assign(old,t);else tasks.unshift(t);if(b)replaceBatch(b);refreshAIViews();}
+async function commitAgentReview(t,b){const records=[['tasks',t]];if(b)records.push(['batches',b]);await persistAI(records,{required:[['tasks',t.id],...(b?[['batches',b.id]]:[])]});const old=tasks.find(x=>x.id===t.id);if(old)Object.assign(old,t);else tasks.unshift(t);if(b)replaceBatch(b);refreshAIViews();}
 // 默认保存当前打开的稿件；AI 连接可传入其他稿件。
 async function saveTask(doc=task){if(!doc)return;doc.updated=new Date().toISOString();const i=tasks.findIndex(t=>t.id===doc.id);if(i<0)tasks.unshift(doc);else tasks[i]=doc;const it=itemOf(doc);if(it)it.updated=doc.updated;if(db)try{await dbOp('put',doc);if(it)await dbOp('put',it,'items');}catch{toast('存储空间不足，请先导出稿件备份；当前稿件尚未保存到浏览器。');}else toast('当前浏览器不能保存历史，请在关闭页面前导出稿件。');}
 async function saveItem(it){it.updated=new Date().toISOString();if(!items.includes(it))items.unshift(it);if(db)try{await dbOp('put',it,'items');}catch{toast('存储空间不足，任务信息尚未保存到浏览器。');}}
@@ -359,15 +360,15 @@ const actions={
  'add-rule':()=>ruleModal(),
  'edit-rule':b=>ruleModal(project().rules.find(r=>r.id===b.dataset.id)),
  'save-rule':saveRule,
- 'delete-task':b=>{const t=tasks.find(t=>t.id===(b.dataset.id||task?.id));if(!t)return toast('稿件已删除。');if(!workbench.canDelete(t))return toast('稿件正在保存或同步，请稍后再删除。');modal('删除这份稿件？',`<p>将删除「${esc(t.filename)}」及其审稿记录。</p><p>内容任务、其他稿件、已归档文件和飞书数据保留。</p>`,btn('close-modal','取消')+btn('confirm-delete','删除稿件','primary',`data-id="${esc(t.id)}"`));},
+ 'delete-task':b=>{const t=tasks.find(t=>t.id===(b.dataset.id||task?.id));if(!t)return toast('稿件已删除。');if(!workbench.canDelete(t)||delivery.isBusy(t.id))return toast('稿件正在保存或同步，请稍后再删除。');modal('删除这份稿件？',`<p>将删除「${esc(t.filename)}」及其审稿记录。</p><p>知稿内相关审稿记录一并清除；若这是最后一份稿件，也会删除空任务。本地归档和飞书数据保留。</p>`,btn('close-modal','取消')+btn('confirm-delete','删除稿件','primary',`data-id="${esc(t.id)}"`));},
  'confirm-delete':async b=>{b.disabled=true;try{await deleteManuscript(b.dataset.id);closeModal();render();toast('稿件已删除。');}finally{if(b.isConnected)b.disabled=false;}},
  'open-item':b=>{item=items.find(i=>i.id===b.dataset.id)||null;page=item?'item':'history';editing=null;render();},
  'new-item':()=>modal('新建内容任务',`<p>一个任务就是一个达人在一个平台的一篇内容。可以先建任务，稿件到了再上传；飞书以后再关联。</p><div class="file-chip">项目：${esc(pname(project()))}</div><div class="form-grid" style="margin-top:16px">${itemFields('new',{author:'',platform:'抖音',kind:'视频',title:''})}</div>`,btn('close-modal','取消')+btn('create-item','创建任务','primary')),
  'create-item':async()=>{const f=readFields('new');if(!f.author)return toast('请填写达人名称。');item=makeItem({projectId:project().id,...f});await saveItem(item);page='item';closeModal();render();},
  'edit-item':()=>modal('编辑任务信息',`<div class="form-grid">${itemFields('edit',item)}</div>`,btn('close-modal','取消')+btn('save-item-edit','保存','primary')),
  'save-item-edit':async()=>{const f=readFields('edit');if(!f.author)return toast('请填写达人名称。');const bad=docsOf(item).find(d=>!reviewStagesFor(f.kind).includes(d.stage));if(bad)return toast(`这个任务已有「${bad.stage}」阶段的稿件，不能改为${f.kind}。`);Object.assign(item,f);for(const d of docsOf(item)){Object.assign(d,{author:f.author,kind:f.kind,platform:f.platform});if(db)await dbOp('put',d);}await saveItem(item);closeModal();render();toast('任务信息已更新。');},
- 'delete-item':()=>modal('删除这个内容任务？',`<p>将删除「${esc(itemName(item))}」及其下 ${docsOf(item).length} 份稿件的本地记录、各轮记录和审稿进度。</p>`,btn('close-modal','取消')+btn('confirm-delete-item','删除任务','primary')),
- 'confirm-delete-item':async()=>{for(const d of docsOf(item)){if(db)await dbOp('delete',d.id);dropVideo(d.id);}tasks=tasks.filter(t=>t.itemId!==item.id);if(db)await dbOp('delete',item.id,'items');items=items.filter(i=>i!==item);if(task?.itemId===item.id)task=null;item=null;page='history';closeModal();render();toast('已删除内容任务。');},
+ 'delete-item':b=>{const it=items.find(i=>i.id===(b.dataset.id||item?.id));if(!it)return toast('任务已删除。');modal('删除这个内容任务？',`<p>将彻底清除知稿中的「${esc(itemName(it))}」、其下 ${docsOf(it).length} 份稿件及全部审稿记录。</p><p>本地归档文件和飞书数据保留。</p>`,btn('close-modal','取消')+btn('confirm-delete-item','删除任务','primary',`data-id="${esc(it.id)}"`));},
+ 'confirm-delete-item':async b=>{b.disabled=true;try{await deleteFromWorkbench({itemId:b.dataset.id});closeModal();render();toast('已删除内容任务。');}finally{if(b.isConnected)b.disabled=false;}},
  'upload-stage':b=>{pendingTarget={it:item,stage:b.dataset.stage};$('#file-input').click();},
  'assign-confirm':async()=>{const doc=pendingDoc,stage=$('#assign-stage').value;if(!doc)return closeModal();let it=items.find(i=>i.id===$('#assign-item').value);const d=it&&stageDoc(it,stage);if(d&&flowOf(d).state==='passed')return toast(assignNote(it,stage));if(!it){const f=readFields('assign');if(!f.author)return toast('请填写达人名称。');it=makeItem({projectId:project().id,...f});if(doc.autoMatch?.feishu&&doc.autoMatch.author===f.author&&doc.autoMatch.platform===f.platform)it.feishu=doc.autoMatch.feishu;}pendingDoc=null;closeModal();await placeDoc(doc,it,stage);},
  'save-publish':async()=>{const day=$('#pub-date').value,status=$('#pub-status').value,link=$('#pub-link').value.trim();if(link&&!/^https?:\/\/\S+$/i.test(link))return toast('发布链接需要以 http:// 或 https:// 开头。');item.publish={date:day,status,link};await saveItem(item);render();const early=status==='已发布'&&itemProgress(item,docsOf(item)).current!=='发布';toast(early?'已保存。注意：内容阶段还没有全部通过品牌审核，却标记了“已发布”，请确认。':status==='已发布'&&!link?'已保存。状态是“已发布”，但还没有填发布链接。':status==='已排期'&&!day?'已保存。状态是“已排期”，但还没有填排期日期。':'发布信息已保存。');},
@@ -457,22 +458,24 @@ document.addEventListener('input',e=>{if(e.target.id==='history-search'){search=
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();if(e.key==='Tab'&&$('#modal-root .modal')){const nodes=Array.from($('#modal-root .modal').querySelectorAll('button,input,select,textarea,a[href]')).filter(n=>!n.disabled);const first=nodes[0],last=nodes.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
 
 function itemPage(){return `<div class="page-title"><div><button class="textbtn" data-page="history">← 内容任务</button><h1>${esc(itemName(item))}</h1></div>${btn('upload-stage','上传稿件','primary',`data-stage="${esc(itemProgress(item,docsOf(item)).current==='发布'?'初稿':itemProgress(item,docsOf(item)).current)}"`)}</div><section class="panel wb-list">${workbench.rows(docsOf(item))}</section><details class="wb-secondary"><summary>任务管理、阶段与发布</summary>${legacyItemPage()}</details>`;}
-async function deleteManuscript(id){
- const t=tasks.find(t=>t.id===id);if(!t)return;
- if(!workbench.canDelete(t))throw Error('稿件正在保存或同步，请稍后再删除。');
- if(!db)throw Error('浏览器数据库不可用，稿件未删除。');
- const changed=batches.filter(b=>b.entries.some(e=>e.docId===id)).map(b=>({...b,updated:new Date().toISOString(),entries:b.entries.map(e=>e.docId===id?{...e,status:'skipped',reason:'稿件已删除。',reviewToken:null}:e)}));
- // 稿件、视频副本与批次一起落库，事务失败时保留页面中的稿件。
- await new Promise((resolve,reject)=>{
-  const tx=db.transaction(['tasks','media','batches'],'readwrite');
-  tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||Error('删除失败，请重试。'));tx.onabort=()=>reject(tx.error||Error('删除未完成，请重试。'));
-  try{tx.objectStore('tasks').delete(id);tx.objectStore('media').delete(id);for(const b of changed)tx.objectStore('batches').put(b);}catch(e){tx.abort();reject(e);}
+async function deleteManuscript(id){return deleteFromWorkbench({docId:id});}
+async function deleteFromWorkbench({docId,itemId}){
+ return withReviewLock(async()=>{
+  const selected=itemId?tasks.filter(t=>t.itemId===itemId):tasks.filter(t=>t.id===docId);
+  if(selected.some(t=>!workbench.canDelete(t)||delivery.isBusy(t.id)))throw Error('稿件正在保存或同步，请完成后再删除。');
+  const removed=await deleteContentRecords(db,{docIds:selected.map(t=>t.id),itemId});
+  const ids=new Set(removed.docIds),itemIds=new Set(removed.itemIds);
+  tasks=tasks.filter(t=>!ids.has(t.id));items=items.filter(i=>!itemIds.has(i.id));
+  batches=batches.filter(b=>!removed.deletedBatches.includes(b.id));for(const b of removed.updatedBatches)replaceBatch(b);
+  for(const updated of removed.updatedIntegrations){const at=extractions.findIndex(x=>x.id===updated.id);if(at>=0)extractions[at]=updated;}
+  forgetReviews(removed.docIds);workbench.forget(removed.docIds);agent.log=[];
+  fsPendingWrites=null;fsDraft=null;seedPlan=null;pendingTarget=null;pendingDoc=null;
+  if(ids.has(vMedia.id)){if(vMedia.url)URL.revokeObjectURL(vMedia.url);vMedia={id:null,url:null,missing:false,loading:false};}
+  if(ids.has(task?.id)){task=null;book=null;docx=null;editing=null;if(page==='review')page='history';}
+  if(itemIds.has(item?.id)){item=null;if(page==='item')page='history';}
  });
- tasks=tasks.filter(t=>t.id!==id);for(const b of changed)replaceBatch(b);
- if(vMedia.id===id){if(vMedia.url)URL.revokeObjectURL(vMedia.url);vMedia={id:null,url:null,missing:false,loading:false};}
- if(task?.id===id){task=null;book=null;docx=null;if(page==='review'){item=itemOf(t);page=item?'item':'history';}}
 }
-async function commitWorkbench(records){await persistAI(records);for(const [store,value] of records){const list=store==='tasks'?tasks:store==='items'?items:null;if(!list)continue;const old=list.find(v=>v.id===value.id);if(old)Object.assign(old,value);else list.unshift(value);}}
+async function commitWorkbench(records){const required=records.filter(([store,value])=>(store==='tasks'?tasks:store==='items'?items:[]).some(x=>x.id===value.id)).map(([store,value])=>[store,value.id]);await persistAI(records,{required});for(const [store,value] of records){const list=store==='tasks'?tasks:store==='items'?items:null;if(!list)continue;const old=list.find(v=>v.id===value.id);if(old)Object.assign(old,value);else list.unshift(value);}}
 async function writeWorkbenchArtifact(t,kind,name,blob){const h=folders.get(t.projectId),p=settings.projects.find(p=>p.id===t.projectId),it=itemOf(t);if(!h||!it||await folderState(h)!=='granted'){folderStates.set(t.projectId,h?await folderState(h):'none');throw Error('请重新授权保存文件夹。');}return saveToFolder(h,[safeName(p?.name||t.projectName),...stageDir(it,t.stage),SUB[kind]],name,blob);}
 const delivery=createDelivery({get:id=>tasks.find(t=>t.id===id),all:()=>tasks,available:t=>folders.has(t.projectId)&&folderStates.get(t.projectId)==='granted',write:writeWorkbenchArtifact,build:aiDraftBlob,name:outName,save:t=>commitWorkbench([['tasks',t]]),refresh:()=>refreshAIViews()});
 const workbench=createWorkbench({state:()=>({settings,tasks,items,batches,page}),render,btn,icon,toast,modal,closeModal,projectOptions,makeItem,parseFile,persist:commitWorkbench,
