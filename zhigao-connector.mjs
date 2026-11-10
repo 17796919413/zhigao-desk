@@ -16,7 +16,7 @@ import readline from 'node:readline';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
-const VERSION = '1.8.0';
+const VERSION = '1.8.1';
 const PORT = Number(process.env.ZHIGAO_PORT) || 47821;
 const HOME = path.join(os.homedir(), '.zhigao');
 const SELF = fileURLToPath(import.meta.url);
@@ -511,8 +511,22 @@ function hubSecret() {
 }
 
 // ---------- 中转 ----------
-const hub = {server: null, queue: [], inflight: new Map(), poller: null, page: null, clients: new Map()};
+const hub = {server: null, queue: [], inflight: new Map(), poller: null, page: null, clients: new Map(), activeRequests: 0, retired: false};
 const pageAlive = () => hub.page && Date.now() - hub.page.seen < 40000;
+const newerVersion = (a,b) => {
+  if(!/^\d+\.\d+\.\d+$/.test(a||'')||!/^\d+\.\d+\.\d+$/.test(b||''))return false;
+  const x=a.split('.').map(Number),y=b.split('.').map(Number);
+  for(let i=0;i<3;i++)if(x[i]!==y[i])return x[i]>y[i];
+  return false;
+};
+const hubBusy = () => hub.activeRequests > 0 || hub.inflight.size > 0 || hub.queue.length > 0;
+function releaseHub() {
+  // Only release an idle listener. Existing stdio clients keep running and forward to the new hub.
+  hub.retired=true;
+  const server=hub.server;hub.server=null;
+  if(hub.poller){const p=hub.poller;hub.poller=null;clearTimeout(p.timer);send(p.res,200,{calls:[],clients:clientList(),reconnecting:true},p.origin);}
+  server?.close();server?.closeIdleConnections?.();
+}
 
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
@@ -532,6 +546,11 @@ const originOk = o => !!o && (ORIGINS.has(o) || LOOPBACK.test(o));
 const clientList = () => { const now = Date.now(); for (const [k, c] of hub.clients) if (now - c.seen > 90000) hub.clients.delete(k); return [...hub.clients.values()].map(c => c.name); };
 
 async function hubDispatch(name, args, client) {
+  hub.activeRequests++;
+  try { return await dispatchToPage(name,args,client); }
+  finally { hub.activeRequests--; }
+}
+async function dispatchToPage(name, args, client) {
   for (let i = 0; !pageAlive() && i < 16; i++) await new Promise(r => setTimeout(r, 500)); // 中转刚切换时等网页重连
   if (!pageAlive()) throw Error('知稿工作台网页没有连接。请让用户在浏览器打开工作台，点右上角“连接与授权”并保持页面开着，然后重试。');
   return new Promise((resolve, reject) => {
@@ -566,10 +585,14 @@ async function onRequest(req, res) {
       if (url.pathname === '/page/feishu') {
         // 飞书读写比 AI 连接权限更敏感：只接受部署来源或用户明确配置的来源。
         if (!ORIGINS.has(origin)) return send(res, 403, {error: '请从已配置的工作台网址打开。',code:'CONNECTOR_ORIGIN'}, origin);
-        const body = await readBody(req, 512 * 1024);
-        if (body.action === 'status') return send(res, 200, {ok:true,data:await feishuConnectionStatus()}, origin);
-        try { return send(res, 200, {ok: true, data: await feishuQueued(body)}, origin); }
-        catch (e) { return send(res, 400, {ok: false, error: String(e.message || e).slice(0, 500),code:e.code}, origin); }
+        if(hub.retired)return send(res,503,{ok:false,code:'CONNECTOR_RECONNECTING',error:'连接器正在切换，请稍后重新检查。'},origin);
+        hub.activeRequests++;
+        try {
+          const body = await readBody(req, 512 * 1024);
+          if (body.action === 'status') return send(res, 200, {ok:true,data:await feishuConnectionStatus()}, origin);
+          return send(res, 200, {ok: true, data: await feishuQueued(body)}, origin);
+        } catch (e) { return send(res, 400, {ok: false, error: String(e.message || e).slice(0, 500),code:e.code}, origin); }
+        finally { hub.activeRequests--; }
       }
       if (url.pathname === '/page/poll') {
         const body = await readBody(req, 64 * 1024);
@@ -591,15 +614,24 @@ async function onRequest(req, res) {
       }
       return send(res, 404, {error: 'not found'}, origin);
     }
-    if (url.pathname === '/health') return send(res, 200, {app: 'zhigao', version: VERSION, page: pageAlive(), clients: clientList()});
+    if (url.pathname === '/health') return send(res, 200, {app: 'zhigao', version: VERSION, page: pageAlive(), clients: clientList(), pid:process.pid, mode:process.argv[2]==='hub'?'standalone':'mcp', busy:hubBusy(), capabilities:['feishu-status','idle-handoff']},originOk(origin)?origin:undefined);
     if (url.pathname.startsWith('/agent/')) {
       // 只给本机进程用：浏览器发来的（带 Origin）一律拒绝，且必须带本机口令
       if (origin || req.headers['x-zhigao-secret'] !== hubSecret()) return send(res, 403, {error: 'forbidden'});
       const body = await readBody(req, 4 * 1024 * 1024);
+      if(url.pathname==='/agent/handoff') {
+        // Authenticated local clients may upgrade, never downgrade, and only to the installed version.
+        if(!newerVersion(body.version,VERSION)||body.version!==installedVersion())return send(res,409,{ok:false,code:'CONNECTOR_VERSION_MISMATCH'});
+        if(hubBusy())return send(res,409,{ok:false,code:'CONNECTOR_BUSY'});
+        send(res,200,{ok:true,state:'releasing'});releaseHub();return;
+      }
       if (url.pathname === '/agent/hello') { hub.clients.set(String(body.key), {name: String(body.name || 'AI').slice(0, 60), seen: Date.now()}); return send(res, 200, {ok: true}); }
       if (url.pathname === '/agent/call') {
+        if(hub.retired)return send(res,200,{error:'连接器正在切换，请稍后重试。',code:'CONNECTOR_RECONNECTING'});
+        hub.activeRequests++;
         try { return send(res, 200, {result: await hubDispatch(String(body.name), body.args, String(body.client || 'AI'))}); }
         catch (e) { return send(res, 200, {error: e.message,code:e.code,details:e.details}); }
+        finally { hub.activeRequests--; }
       }
     }
     return send(res, 404, {error: 'not found'});
@@ -607,6 +639,7 @@ async function onRequest(req, res) {
 }
 
 function startHub() {
+  if(hub.retired||newerVersion(installedVersion(),VERSION))return Promise.resolve(false);
   hubSecret();
   return new Promise(resolve => {
     const s = http.createServer(onRequest);
@@ -639,11 +672,26 @@ function health() {
 }
 
 const me = {key: crypto.randomUUID(), name: 'AI'};
+const isToolProbe = () => me.name.startsWith('workbuddy-mcp-probe:');
+let rolePending=null;
 async function ensureRole() {
+  if(!rolePending)rolePending=ensureRoleOnce().finally(()=>{rolePending=null;});
+  return rolePending;
+}
+async function ensureRoleOnce() {
   if (hub.server) { hub.clients.set(me.key, {name: me.name, seen: Date.now()}); return; }
   if (await startHub()) { log('已作为本机中转运行，端口', PORT); hub.clients.set(me.key, {name: me.name, seen: Date.now()}); return; }
   const h = await health();
   if (h?.app !== 'zhigao') throw Error(`端口 ${PORT} 被其他程序占用。可设置环境变量 ZHIGAO_PORT 换一个端口（网页端需同步修改）。`);
+  if(newerVersion(VERSION,h.version)&&h.capabilities?.includes('idle-handoff')) {
+    const result=await agentPost('/agent/handoff',{version:VERSION},3000).catch(()=>null);
+    if(result?.ok){
+      for(let i=0;i<10;i++){
+        if(await startHub()){hub.clients.set(me.key,{name:me.name,seen:Date.now()});log('已接替旧版中转',h.version,'→',VERSION);return;}
+        await new Promise(r=>setTimeout(r,100));
+      }
+    }
+  }
   await agentPost('/agent/hello', {key: me.key, name: me.name}).catch(() => {});
 }
 async function callTool(name, args) {
@@ -671,7 +719,7 @@ function serveMcp() {
     try {
       if (m.method === 'initialize') {
         const ci = m.params?.clientInfo; if (ci?.name) me.name = String(ci.name).slice(0, 60);
-        ensureRole().catch(e => log(e.message));
+        if(!isToolProbe())ensureRole().catch(e => log(e.message));
         return reply({protocolVersion: m.params?.protocolVersion || '2025-06-18', capabilities: {tools: {listChanged: false}},
           serverInfo: {name: 'zhigao', title: '知稿审稿工作台', version: VERSION}, instructions: INSTRUCTIONS});
       }
@@ -692,11 +740,7 @@ function serveMcp() {
   });
   rl.on('close', () => process.exit(0));
   // 中转退出时接替；定期向中转报到，让网页显示有哪些 AI 在线
-  setInterval(async () => {
-    if (hub.server) return hub.clients.set(me.key, {name: me.name, seen: Date.now()});
-    if (!(await health())) { if (await startHub()) { log('原中转已退出，由本进程接替'); hub.clients.set(me.key, {name: me.name, seen: Date.now()}); } return; }
-    agentPost('/agent/hello', {key: me.key, name: me.name}).catch(() => {});
-  }, 5000).unref();
+  setInterval(() => {if(!isToolProbe())ensureRole().catch(e=>debug(e.message));}, 5000).unref();
 }
 
 // ---------- 安装到各 AI 客户端 ----------
@@ -782,6 +826,44 @@ function installedVersion(){
   try{return fs.readFileSync(INSTALLED,'utf8').match(/const VERSION = '([^']+)'/)?.[1]||'unknown';}
   catch{return null;}
 }
+function legacyListener() {
+  if(process.platform!=='win32')return null;
+  // Read only the owner of this one loopback listener; never enumerate or stop all Node processes.
+  const script=`$OutputEncoding=[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $c=Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ${PORT} -State Listen -ErrorAction Stop; $p=Get-CimInstance Win32_Process -Filter ('ProcessId = '+$c.OwningProcess); $p | Select-Object ProcessId,ExecutablePath,CommandLine,CreationDate | ConvertTo-Json -Compress`;
+  const r=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{encoding:'utf8',windowsHide:true,timeout:10000});
+  try {
+    const p=JSON.parse(r.stdout),argv=[...String(p.CommandLine||'').matchAll(/"([^"]*)"|(\S+)/g)].map(m=>m[1]??m[2]);
+    const samePath=(a,b)=>path.resolve(a||'').toLowerCase()===path.resolve(b).toLowerCase();
+    if(!Number.isInteger(p.ProcessId)||argv.length!==3||argv[2]!=='hub'||!samePath(argv[1],INSTALLED)||!samePath(p.ExecutablePath,process.execPath))return null;
+    return {pid:p.ProcessId,created:p.CreationDate,mode:'standalone'};
+  } catch {return null;}
+}
+async function repairRuntime({restartLegacy=false,confirmIdle=false}={}) {
+  const h=await health(),installed=installedVersion();
+  if(h&&h.app!=='zhigao')return {state:'foreign_listener',changed:false};
+  if(h&&!newerVersion(installed,h.version))return {state:'current',changed:false,runningVersion:h.version};
+  if(!installed||installed!==VERSION)return {state:'install_current_first',changed:false};
+  if(h?.capabilities?.includes('idle-handoff')) {
+    const r=await agentPost('/agent/handoff',{version:installed},3000).catch(()=>null);
+    if(!r?.ok)return {state:r?.code==='CONNECTOR_BUSY'?'waiting_for_idle':'handoff_failed',changed:false};
+  } else if(h) {
+    const owner=legacyListener();
+    if(!owner||!restartLegacy||!confirmIdle)return {state:'legacy_restart_required',changed:false,...(owner?{pid:owner.pid,mode:owner.mode,canRestart:true}:{canRestart:false})};
+    const again=legacyListener(),current=await health();
+    if(!again||again.pid!==owner.pid||again.created!==owner.created||current?.app!=='zhigao'||current.version!==h.version)return {state:'listener_changed',changed:false};
+    // Legacy hubs cannot report in-flight work. Only an explicit confirmed maintenance action may stop one.
+    process.kill(owner.pid);
+  }
+  for(let i=0;i<20;i++){if(!(await health()))break;await new Promise(r=>setTimeout(r,100));}
+  const child=spawn(process.execPath,[INSTALLED,'hub'],{detached:true,stdio:'ignore',windowsHide:true,env:process.env});
+  let failed=false;child.on('error',()=>{failed=true;});child.unref();
+  for(let i=0;i<30&&!failed;i++){
+    const current=await health();
+    if(current?.app==='zhigao'&&(current.version===installed||newerVersion(current.version,installed)))return {state:'restarted',changed:true,runningVersion:current.version};
+    await new Promise(r=>setTimeout(r,100));
+  }
+  return {state:'restart_failed',changed:true};
+}
 async function setupStatus({verifyFeishu=false,client=null}={}) {
   if(typeof verifyFeishu!=='boolean')throw Error('verifyFeishu 必须为布尔值。');
   if(client!==null&&!SETUP_CLIENTS.includes(client))throw Error('不支持的客户端。');
@@ -790,8 +872,10 @@ async function setupStatus({verifyFeishu=false,client=null}={}) {
   try{larkCliScript();feishu=verifyFeishu?await feishuConnectionStatus():{state:'installed',login:'not_checked'};}
   catch(e){feishu={state:'missing',code:e.code||'FEISHU_CLI_MISSING'};}
   const report={schemaVersion:1,version:VERSION,
-    connector:{installedVersion:installed,state:!installed?'not_installed':installed===VERSION?'installed':'update_needed',runningVersion:h?.app==='zhigao'?h.version:null},
-    ai:{state:h?.app!=='zhigao'?'not_running':!h.page?'page_not_connected':h.clients?.length?'connected':'waiting_for_client',clients:h?.app==='zhigao'?h.clients:[]},
+    connector:{installedVersion:installed,state:!installed?'not_installed':installed===VERSION?'installed':'update_needed',runningVersion:h?.app==='zhigao'?h.version:null,
+      runtimeState:h?.app!=='zhigao'?'not_running':newerVersion(installed,h.version)?h.capabilities?.includes('idle-handoff')?(h.busy?'waiting_for_idle':'reload_client'):'legacy_restart_required':'current',
+      ...(h?.pid?{pid:h.pid,mode:h.mode,busy:h.busy}:{})},
+    ai:{state:h?.app!=='zhigao'?'not_running':!h.page?'page_not_connected':h.clients?.length?'connected':'waiting_for_client',clients:h?.app==='zhigao'?h.clients:[],listMeaning:'live_connections_only',note:'此列表只表示近期在线连接，不代表已配置客户端清单。WorkBuddy 等客户端可能在探测工具后断开，在实际使用时重新连接。'},
     feishu,browser:{state:'not_connected'},
     ...(client?{client:clientSetupState(client)}:{}),
     guide:SITE+'AGENT_SETUP.md',openUrl:SITE+'?connect=1',checkedAt:new Date().toISOString()};
@@ -802,7 +886,9 @@ async function setupStatus({verifyFeishu=false,client=null}={}) {
   }
   report.next=[];
   if(report.connector.state!=='installed')report.next.push('运行 setup --client <当前客户端> --json。');
-  if(h?.version&&h.version!==VERSION)report.next.push('本机中转版本较旧，请重新连接客户端中的知稿 MCP。');
+  if(report.connector.runtimeState==='legacy_restart_required')report.next.push('旧版中转不支持自动交接。按 AGENT_SETUP.md 的旧版迁移步骤定位监听端口 '+PORT+' 的知稿进程；确认无进行中的审稿或飞书操作后只重启该中转。退出 AI 客户端不能保证独立 hub 退出，无需重新授权飞书。');
+  else if(report.connector.runtimeState==='waiting_for_idle')report.next.push('旧中转正在处理任务；新版客户端将在任务完成后自动接管，请勿强制结束进程。');
+  else if(report.connector.runtimeState==='reload_client')report.next.push('已安装新版，请重新加载一个客户端的知稿 MCP；空闲中转将自动交接。');
   if(report.ai.state!=='connected')report.next.push('打开 openUrl；按客户端要求重新加载知稿 MCP。');
   if(feishu.state!=='ready')report.next.push(feishu.state==='installed'?'使用 --verify-feishu 检查登录状态。':'按接入说明完成飞书安装、应用配置或账号授权。');
   if(report.browser.archive?.state!=='granted')report.next.push('网页连接后，用 zhigao_open_setup 展开 folder，请用户选择或授权保存文件夹。');
@@ -822,7 +908,8 @@ async function setupClient(opts) {
   if(opts.client!=='manual'&&!['configured','patch_ready'].includes(before.state))note=CLIENTS[opts.client].add()||'';
   const after=clientSetupState(opts.client);
   if(opts.client!=='manual'&&!['configured','patch_ready'].includes(after.state))throw Object.assign(Error('客户端配置尚未验证，请检查 MCP 设置。'),{code:'CLIENT_NOT_VERIFIED'});
-  return {ok:true,version:VERSION,connector:same?'unchanged':'installed',client:after,
+  const runtime=await health()?await repairRuntime():{state:'not_running',changed:false};
+  return {ok:true,version:VERSION,connector:same?'unchanged':'installed',client:after,runtime,
     ...(opts.client==='manual'?{mcp:{type:'stdio',command:NODE,args:[INSTALLED]}}:{}),
     ...(note?{note}:{}),next:'重新加载当前客户端的知稿 MCP，打开 openUrl，再调用 zhigao_setup_status。',openUrl:SITE+'?connect=1',guide:SITE+'AGENT_SETUP.md'};
 }
@@ -831,9 +918,9 @@ async function setupCli(cmd,argv){
   catch(e){console.log(JSON.stringify({ok:false,code:e.code||'SETUP_FAILED',message:e.code?e.message:'接入未完成，请核对命令参数、客户端状态与文件权限。'}));process.exitCode=1;}
 }
 
-function install(which) {
+async function install(which) {
   fs.mkdirSync(HOME, {recursive: true});
-  if (path.resolve(SELF) !== path.resolve(INSTALLED)) fs.copyFileSync(SELF, INSTALLED);
+  if (path.resolve(SELF) !== path.resolve(INSTALLED)) {backup(INSTALLED);fs.copyFileSync(SELF, INSTALLED);}
   hubSecret();
   const keys = which ? [which] : Object.keys(CLIENTS);
   console.log(`知稿连接器 ${VERSION} 已放到 ${INSTALLED}\nNode：${NODE}\n`);
@@ -843,7 +930,8 @@ function install(which) {
     try { const note = c.add(); console.log(`✓ ${c.label}：已接入${note ? '\n  ' + note : ''}`); }
     catch (e) { console.log(`✗ ${c.label}：接入失败 ${String(e.message).split('\n')[0]}`); }
   }
-  console.log(`\n其他支持 MCP 的客户端（Cherry Studio、Trae、Cursor 等）手动添加 stdio 服务：\n  命令 ${NODE}\n  参数 ${INSTALLED}\n\n下一步：重启 AI 客户端；在浏览器打开知稿工作台，点右上角“连接与授权”。然后对 AI 说“用知稿审一下待处理的稿件”。`);
+  const runtime=await health()?await repairRuntime():{state:'not_running'};
+  console.log(`\n中转状态：${runtime.state}${runtime.state==='legacy_restart_required'?'；旧中转需要单独迁移，请让 Agent 按 AGENT_SETUP.md 检查并处理，无需重新授权飞书。':''}\n其他支持 MCP 的客户端（Cherry Studio、Trae、Cursor 等）手动添加 stdio 服务：\n  命令 ${NODE}\n  参数 ${INSTALLED}\n\n重新加载当前客户端的知稿 MCP；在浏览器打开知稿工作台，点右上角“连接与授权”。然后对 AI 说“用知稿审一下待处理的稿件”。`);
 }
 function uninstall(which) {
   for (const k of which ? [which] : Object.keys(CLIENTS)) { const c = CLIENTS[k]; if (!c) continue; try { console.log(`${c.label}：${c.remove() ? '已移除' : '无需移除'}`); } catch (e) { console.log(`${c.label}：移除失败 ${e.message}`); } }
@@ -853,13 +941,18 @@ function uninstall(which) {
 export {parseExecutionSheet,buildExecutionData,refinedSheets,executionDate,extractExecution};
 if(process.argv[1]&&path.resolve(process.argv[1])===SELF){
 const [cmd, arg] = process.argv.slice(2);
-if (cmd === 'install') install(arg);
+if (cmd === 'install') install(arg).catch(e=>{log('安装未完成：',e.message);process.exitCode=1;});
 else if (cmd === 'setup' || cmd === 'doctor') setupCli(cmd,process.argv.slice(3));
+else if(cmd==='repair') {
+  const args=process.argv.slice(3);
+  if(args.some(a=>!['--json','--restart-legacy','--confirm-idle'].includes(a))){console.log(JSON.stringify({ok:false,code:'INVALID_ARGUMENT'}));process.exitCode=1;}
+  else repairRuntime({restartLegacy:args.includes('--restart-legacy'),confirmIdle:args.includes('--confirm-idle')}).then(r=>{const ok=['current','restarted'].includes(r.state);console.log(JSON.stringify({ok,...r}));if(!ok)process.exitCode=1;}).catch(()=>{console.log(JSON.stringify({ok:false,state:'repair_failed'}));process.exitCode=1;});
+}
 else if (cmd === 'uninstall') uninstall(arg);
 else if (cmd === 'status') health().then(h => console.log(h ? `中转运行中 · 网页${h.page ? '已连接' : '未连接'} · AI 客户端：${h.clients.join('、') || '无'}` : '中转未运行（AI 客户端启动后会自动拉起）'));
 else if (cmd === 'hub') startHub().then(ok => { if (!ok) { log('端口已被占用'); process.exit(1); } log('中转运行中，端口', PORT, '（Ctrl+C 退出）'); });
 else if (cmd === '--version' || cmd === '-v') console.log(VERSION);
-else if (cmd === 'help' || cmd === '--help' || cmd === '-h') console.log('用法：node zhigao-connector.mjs [setup --client <claude|codex|workbuddy|dsh|manual> --json | doctor [--client <client>] [--verify-feishu] --json | install [client] | uninstall | status | hub]\n不带参数时作为 MCP 服务运行（由 AI 客户端启动）。接入说明：'+SITE+'AGENT_SETUP.md');
+else if (cmd === 'help' || cmd === '--help' || cmd === '-h') console.log('用法：node zhigao-connector.mjs [setup --client <claude|codex|workbuddy|dsh|manual> --json | doctor [--client <client>] [--verify-feishu] --json | repair [--restart-legacy --confirm-idle] --json | install [client] | uninstall | status | hub]\nrepair 的旧版选项仅在确认无进行中的任务后使用；只处理已验证的独立知稿中转。接入说明：'+SITE+'AGENT_SETUP.md');
 else if (cmd) { console.log(`未知命令：${cmd}，见 --help`); process.exit(1); }
 else serveMcp();
 

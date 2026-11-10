@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
@@ -10,9 +10,11 @@
   "commands": {
     "inspect": ["node", "zhigao-connector.mjs", "doctor", "--json"],
     "configure": ["node", "zhigao-connector.mjs", "setup", "--client", "<current-client>", "--json"],
-    "verify": ["node", "zhigao-connector.mjs", "doctor", "--verify-feishu", "--json"]
+    "verify": ["node", "zhigao-connector.mjs", "doctor", "--verify-feishu", "--json"],
+    "repair": ["node", "zhigao-connector.mjs", "repair", "--json"]
   },
   "mcpTools": {"status": "zhigao_setup_status", "openExistingSettings": "zhigao_open_setup"},
+  "runtimeUpgrade": {"mode": "authenticated-idle-handoff", "legacy": "explicit-confirmed-standalone-restart", "clientList": "live-connections-only"},
   "feishu": {
     "package": "@larksuite/cli",
     "identity": "user",
