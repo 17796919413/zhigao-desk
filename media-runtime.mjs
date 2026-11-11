@@ -70,7 +70,7 @@ export async function mediaAction(body){
  if(body.action==='doctor')return mediaDoctor();
  if(body.action==='begin'){
   const status=await mediaDoctor();if(!status.ready)return {state:'setup_required',runtime:status};
-  if(typeof body.docId!=='string'||typeof body.projectId!=='string'||typeof body.revision!=='string'||!Number.isSafeInteger(body.size)||body.size<=0||body.size>2*1024*1024*1024)throw Error('视频元数据无效。');
+  if(typeof body.docId!=='string'||typeof body.projectId!=='string'||typeof body.revision!=='string'||!Number.isSafeInteger(body.size)||body.size<=0)throw Error('视频元数据无效。');
   const id=crypto.randomUUID(),token=crypto.randomBytes(24).toString('hex'),dir=path.join(jobs,id),meta={id,token,docId:body.docId,projectId:body.projectId,revision:body.revision,size:body.size,received:0,state:'uploading',created:new Date().toISOString()};save(path.join(dir,'meta.json'),meta);fs.writeFileSync(path.join(dir,'source.media'),'');return {jobId:id,jobToken:token,state:'uploading',chunkBytes:512*1024};
  }
  const {dir,meta}=job(body.jobId,body.jobToken);

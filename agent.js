@@ -19,7 +19,7 @@ export const agentWanted=()=>{try{return localStorage.getItem(KEY)==='on';}catch
 const remember=on=>{try{localStorage.setItem(KEY,on?'on':'off');}catch{}};
 const set=(state,extra={})=>{Object.assign(agent,{state},extra);ctx?.changed();};
 const sleep=(ms,signal)=>new Promise(r=>{const t=setTimeout(r,ms);signal?.addEventListener('abort',()=>{clearTimeout(t);r();},{once:true});});
-async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data),signal,cache:'no-store'});if(!r.ok)throw Error(`连接器返回 ${r.status}`);return r.json();}
+async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data),signal,cache:'no-store'});if(!r.ok){const body=await r.json().catch(()=>({}));throw Object.assign(Error(body.error||`连接器返回 ${r.status}`),{code:body.code});}return r.json();}
 
 // 飞书读取可由 MCP 发起；写入入口仍仅由网页中的人工确认操作调用。
 export async function feishuLocal(action,data={}){
@@ -51,7 +51,7 @@ const tools={
  async zhigao_publish_feishu_extraction({draftId,title,reviewedEntries}){return {ok:true,document:await ctx.publishExtraction(draftId,title,reviewedEntries)};},
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.10.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.11.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
@@ -99,12 +99,17 @@ async function loop(signal){
   try{const r=await post('/page/poll',{pageId,title:document.title,hello},signal);hello=false;wait=3000;
    set(r.clients?.length?'online':'waiting',{clients:r.clients||[],version:r.version||agent.version});
    for(const c of r.calls||[])await handle(c);}
-  catch{if(signal.aborted)break;hello=true;set('offline',{clients:[]});await sleep(wait,signal);wait=Math.min(wait*2,15000);}
+  catch(e){if(signal.aborted)break;hello=true;set(e.code==='PAGE_IN_USE'?'other-tab':'offline',{clients:[]});await sleep(wait,signal);wait=Math.min(wait*2,15000);}
  }
 }
 async function run(){abort=new AbortController();set('connecting');try{await reviewService.recover();await loop(abort.signal);}finally{running=false;}}
 
-export function initAgent(c){ctx=c;videoProcessor=createVideoProcessor(c);reviewService=createReviewService({...c,getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();}
+let discovering=false;
+async function discoverAgent(){
+ if(discovering||running||document.hidden||localStorage.getItem(KEY)==='off')return;
+ discovering=true;try{const r=await fetch(HUB+'/health',{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(2500)}),h=await r.json();if(h.app==='zhigao'&&localStorage.getItem(KEY)!=='off')startAgent();}catch{}finally{discovering=false;}
+}
+export function initAgent(c){ctx=c;videoProcessor=createVideoProcessor(c);reviewService=createReviewService({...c,getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();else discoverAgent();setInterval(discoverAgent,5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)discoverAgent();});}
 export async function startAgent(){
  remember(true);if(running)return;running=true;set('connecting');
  if(!navigator.locks)return run();
@@ -112,7 +117,9 @@ export async function startAgent(){
  const got=await navigator.locks.request('zhigao-agent',{ifAvailable:true},async l=>{if(!l)return false;await run();return true;});
  if(got===false&&running){set('other-tab');try{await navigator.locks.request('zhigao-agent',{signal:lockAbort.signal},()=>run());}catch{running=false;}}
 }
-export function stopAgent(){remember(false);lockAbort?.abort();abort?.abort();running=false;set('off',{clients:[]});}
+const disconnectPage=()=>{try{navigator.sendBeacon(HUB+'/page/disconnect',JSON.stringify({pageId}));}catch{}};
+window.addEventListener('pagehide',disconnectPage);
+export function stopAgent(){disconnectPage();remember(false);lockAbort?.abort();abort?.abort();running=false;set('off',{clients:[]});}
 
 export const withReviewLock=fn=>reviewService?reviewService.exclusive(fn):fn();
 export const forgetReviews=ids=>reviewService?.forget(ids);

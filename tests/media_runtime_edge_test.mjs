@@ -59,5 +59,7 @@ try{
  assert.equal((await module.mediaAction({action:'status',...binding})).state,'interrupted');save(metaFile,{...meta,ownerPid:2147483647});save(path.join(dir,'progress.json'),{state:'running',pid:2147483647});
  assert.equal((await module.mediaAction({action:'status',...binding})).state,'interrupted');
  await module.mediaAction({action:'retry',...binding});await wait(async()=>{const s=await module.mediaAction({action:'status',...binding});if(s.state==='failed')throw Error(s.error);return s.state==='complete';});await wait(()=>!module.mediaBusy());note('Worker updates and dead processing owners require safe retry');
+ const large=await module.mediaAction({action:'begin',docId:'large',projectId:'A',revision:'large-v1',size:3*1024*1024*1024});
+ assert.equal(large.state,'uploading');assert.equal(fs.statSync(path.join(runtime,'jobs',large.jobId,'source.media')).size,0);note('Video larger than 2GiB can begin chunked upload without allocating the full file');
  console.log(JSON.stringify({total:checks.length,checks}));
 }finally{await wait(()=>!module.mediaBusy());fs.rmSync(temp,{recursive:true,force:true});}

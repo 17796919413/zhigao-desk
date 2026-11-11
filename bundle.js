@@ -4,7 +4,8 @@ import {digest,stableJSON} from './review-assurance.js';
 export const BUNDLE_KIND='zhigao-bundle',BUNDLE_VERSION=2;
 const MANIFEST='manifest.json';
 // 稿件里的 ArrayBuffer（原件、历史轮次原件）单独存为文件，manifest 只记路径。
-function stripBuffers(doc,files){const d=structuredClone({...doc,buffer:null,rounds:[]});delete d.videoPreparation;delete d.originalFile;if(doc.buffer){const p=`files/${doc.id}/current`;files.push([p,doc.buffer]);d.bufferPath=p;}d.rounds=(doc.rounds||[]).map((r,i)=>{const x={...r,buffer:null};if(r.buffer){const p=`files/${doc.id}/round-${i+1}`;files.push([p,r.buffer]);x.bufferPath=p;}return x;});return d;}
+function stripBuffers(doc,files){const d=structuredClone({...doc,buffer:null,rounds:[]});delete d.videoPreparation;delete d.originalFile;
+ d.brandFeedback=(doc.brandFeedback||[]).map((f,i)=>{const x={...f};if(f.originalAsset?.buffer){const p=`files/${doc.id}/feedback-${i}`;files.push([p,f.originalAsset.buffer]);x.originalAsset={...f.originalAsset,buffer:null,bufferPath:p};}return x;});if(doc.buffer){const p=`files/${doc.id}/current`;files.push([p,doc.buffer]);d.bufferPath=p;}d.rounds=(doc.rounds||[]).map((r,i)=>{const x={...r,buffer:null};if(r.buffer){const p=`files/${doc.id}/round-${i+1}`;files.push([p,r.buffer]);x.bufferPath=p;}return x;});return d;}
 export async function makeBundle({projects,items,docs,media,note,libraryAssets=[]}){
  const zip=new globalThis.JSZip(),files=[],out={kind:BUNDLE_KIND,version:BUNDLE_VERSION,created:new Date().toISOString(),note:note||'',projects:structuredClone(projects),items:structuredClone(items),docs:docs.map(d=>stripBuffers(d,files)),media:[],libraryAssets:[],projectHashes:{}};
  for(const p of projects)out.projectHashes[p.id]=await digest(stableJSON(p));
@@ -24,7 +25,7 @@ export async function readBundle(file){
  const projectIds=new Set(data.projects.map(p=>p.id));if(projectIds.size!==data.projects.length||data.projects.some(p=>typeof p.id!=='string'||!p.id||typeof p.name!=='string')||data.docs.some(d=>!projectIds.has(d.projectId)))throw Error('交接包品牌归属不完整。');
  if(data.version>=2)for(const p of data.projects)if(await digest(stableJSON(p))!==data.projectHashes?.[p.id])throw Error('交接包品牌资料版本校验失败。');
  const get=async p=>{const f=p&&zip.file(p);if(!f)throw Error(`交接包缺少文件：${p}`);return f.async('arraybuffer');};
- for(const d of data.docs){if(d.bufferPath){d.buffer=await get(d.bufferPath);delete d.bufferPath;}for(const r of d.rounds||[])if(r.bufferPath){r.buffer=await get(r.bufferPath);delete r.bufferPath;}}
+ for(const d of data.docs){for(const f of d.brandFeedback||[])if(f.originalAsset?.bufferPath){f.originalAsset.buffer=await get(f.originalAsset.bufferPath);delete f.originalAsset.bufferPath;}if(d.bufferPath){d.buffer=await get(d.bufferPath);delete d.bufferPath;}for(const r of d.rounds||[])if(r.bufferPath){r.buffer=await get(r.bufferPath);delete r.bufferPath;}}
  const media=[];for(const x of data.media||[]){const f=zip.file(x.path);if(f)media.push({id:x.id,blob:new Blob([await f.async('blob')],{type:x.type})});}
  const libraryAssets=[];for(const x of data.libraryAssets||[]){const buffer=await get(x.path);if(await digest(buffer)!==x.hash)throw Error('品牌资料原件校验失败。');libraryAssets.push({id:x.id,file:{...x.file,buffer}});}
  for(const p of data.projects)for(const d of p.library||[])if(d.ingestion?.assetKey&&!libraryAssets.some(a=>a.id===d.ingestion.assetKey))throw Error('交接包缺少品牌资料原件：'+d.title);

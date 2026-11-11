@@ -31,9 +31,9 @@ export function createConnections(ctx) {
     off: ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'],
     connecting: ['连接中', '正在连接这台电脑上的知稿连接器。'],
     offline: ['连接器未运行', '启动已接入知稿的 AI 客户端。首次使用请安装连接器。'],
-    waiting: ['等待 AI 客户端', '连接器已就绪，请打开已接入知稿的 AI 客户端。'],
+    waiting: ['网页已连接 · 等待 AI', '网页已接通本机连接器。请在 AI 客户端调用一次知稿状态工具；有些客户端会在空闲时断开。'],
     online: ['已连接', ctx.agent.clients.join('、')],
-    'other-tab': ['其他页面已连接', '关闭另一个已连接的知稿标签页，这里会自动接入。'],
+    'other-tab': ['其他页面已连接', '另一个知稿标签页或浏览器正在连接。关闭旧页面后，这里会自动接入。'],
   })[ctx.agent.state] || ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'];
 
   function aiGuide() {
@@ -75,7 +75,7 @@ export function createConnections(ctx) {
     return `<div class="connect-intro-row"><p class="connect-intro">按需连接，用到时再设置。</p>${button('connect-update-check',updateBusy?(update?.state==='downloading'?'更新中…':'检查中…'):'检查更新',updateBusy?'disabled':'')}</div>` +updatePanel()+
       row('ai', 'AI 审稿', aiLabel, aiDesc, ['off','offline'].includes(ctx.agent.state) ? button('agent-on', '连接 AI') : '', aiGuide()) +
       row('feishu', '飞书同步', fsLabel, fsDesc, button('connect-check', checking ? '检查中…' : '检查连接', checking ? 'disabled' : ''), feishuGuide() + (['connector','update','origin'].includes(feishu.state) ? button('connect-expand', '设置连接器', 'data-section="ai"') : '')) +
-      row('folder', '本地归档', folderLabel, folderDesc, folderSupported() ? button(folder && folderState !== 'granted' ? 'connect-folder-grant' : 'connect-folder-pick', folder ? folderState === 'granted' ? '更换文件夹' : '授权文件夹' : '选择文件夹', `data-pid="${esc(p.id)}"`) : '', `<p>为“${esc(p.name)}”选择一个文件夹，并在浏览器提示中允许保存。审稿完成后会自动归档。</p><p>浏览器再次询问时，点击“授权文件夹”。暂不设置时，可从稿件列表导出文件。</p><p>本地归档请使用桌面版 Edge 或 Chrome；其他浏览器可下载导出文件。</p>`) +
+      row('folder', '本地归档', folderLabel, folderDesc, folderSupported() && p.id ? button(folder && folderState !== 'granted' ? 'connect-folder-grant' : 'connect-folder-pick', folder ? folderState === 'granted' ? '更换文件夹' : '授权文件夹' : '选择文件夹', `data-pid="${esc(p.id)}"`) : '', `<p>为“${esc(p.name)}”选择一个文件夹，并在浏览器提示中允许保存。审稿完成后会自动归档。</p><p>浏览器再次询问时，点击“授权文件夹”。暂不设置时，可从稿件列表导出文件。</p><p>本地归档请使用桌面版 Edge 或 Chrome；其他浏览器可下载导出文件。</p>`) +
       `<details class="connect-more connect-basics"><summary>其他功能怎么使用</summary><p>上传稿件、品牌资料、口径、批注和导出文件，直接在工作台操作。AI 审稿和反馈提取需要连接 AI；飞书提炼还需登录飞书。</p><p>Word、Excel 和文字稿可审核并导出修改稿；图片、PDF、扫描页和视频可由具备相应看图、听审能力的 AI 审核，输出意见，原件保持不变。视频首次使用需准备本机媒体组件。</p><p>使用 AI：上传稿件 → 复制审稿提示词 → 粘贴到已连接的客户端 → 返回工作台查看结果。</p></details>`;
   }
   function refresh() {

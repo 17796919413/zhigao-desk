@@ -1,6 +1,6 @@
 // 视频只读审核的工具函数：读取元数据、时间码换算、按时间截取画面。不剪辑、不改动原视频。
 export const VIDEO_EXT=/\.(mp4|mov|m4v|webm)$/i;
-export const VIDEO_MAX=2*1024*1024*1024;
+// 上传不设固定容量阈值；使用分片传输，实际容量由设备资源决定。
 // 按 0.1 秒取整后再拆分，避免出现 00:60.0 这样的进位错误。
 export function fmtTime(sec){const d=Math.round(Math.max(0,Number(sec)||0)*10),h=Math.floor(d/36000),m=Math.floor(d%36000/600),s=((d%600)/10).toFixed(1).padStart(4,'0');return h?`${h}:${String(m).padStart(2,'0')}:${s}`:`${String(m).padStart(2,'0')}:${s}`;}
 // 接受 83、1:23、1:23.5、1:02:03；格式不对返回 NaN。

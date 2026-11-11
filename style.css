@@ -92,3 +92,24 @@
 @media(max-width:600px){.fs-page .panel-heading{flex-wrap:wrap;gap:10px}.fs-page .fs-table{min-width:700px;table-layout:auto}.fs-page .fs-table :is(th,td),.fs-page .refined-table :is(th,td){display:table-cell!important}}
 
 .review-original-image{display:block;max-width:100%;height:auto;margin:0 auto}
+.agent-state-label{font-size:12px;margin-left:8px;color:inherit}
+.project-switcher{flex-wrap:wrap}
+#brand-current-rules .rule-row{grid-template-columns:auto minmax(0,1fr) auto auto}
+.wb-feedback{margin-top:18px;border-top:1px solid #e5e5e5;padding-top:16px}
+.wb-feedback summary{cursor:pointer;font-weight:500;width:fit-content}
+.wb-feedback summary span{font-size:13px;color:#555;margin-left:10px;font-weight:400}
+.wb-feedback-body{padding-top:12px;max-width:900px}
+.wb-feedback-body>p{font-size:14px;line-height:1.65;color:#555}
+.wb-feedback-body>label{display:block;margin:18px 0 8px;font-size:14px}
+.wb-feedback textarea{width:100%;min-height:88px;resize:vertical;margin-bottom:10px;padding:12px 14px;border:1px solid #ccc;border-radius:8px;background:#fff;color:#111;font:inherit;line-height:1.65}
+.wb-feedback-entry{display:flex;align-items:start;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid #e8e8e8}
+.wb-feedback-entry>div:first-child{min-width:0;flex:1;overflow-wrap:anywhere}
+.wb-feedback-entry strong{font-size:14px;font-weight:500}
+.wb-feedback-entry p{white-space:pre-wrap;max-height:200px;overflow:auto;font-size:14px;line-height:1.7;margin:8px 0}
+.wb-feedback-entry small,.wb-feedback-body small{color:#555}
+.feedback-file-label{position:relative;cursor:pointer;overflow:hidden}
+.feedback-file-label input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
+.feedback-file-label:focus-within,.wb-feedback :is(button,textarea,summary):focus-visible{outline:2px solid #222;outline-offset:3px}
+.feedback-status{font-size:14px;color:#555;margin:8px 0 0}
+.feedback-thumbnail{display:block;max-width:min(260px,100%);max-height:180px;object-fit:contain;margin:10px 0;border:1px solid #ddd;border-radius:6px}
+@media(max-width:600px){.agent-state-label{display:none}.project-switcher .input{width:100%;max-width:100%}.wb-feedback-entry{flex-wrap:wrap;gap:8px}.wb-feedback-entry>div:first-child{flex-basis:100%}.wb-feedback summary span{display:block;margin:5px 0 0 16px}.wb-feedback textarea{font-size:16px}#brand-current-rules .rule-row{grid-template-columns:auto minmax(0,1fr) auto auto;gap:8px}}

@@ -14,12 +14,12 @@ export async function inspectReviewMedia(task){
  const assets=[],blockers=[],supplementalText=[];let sourceHash='text-only';
  const fmt=task.fmt||(task.buffer?'xlsx':'text');
  if(task.buffer)sourceHash=await digest(task.buffer);
- if(['docx','xlsx'].includes(fmt)){
+ if(['docx','xlsx','pptx'].includes(fmt)){
   if(!task.buffer)throw Error('稿件原文件缺失，不能确认图片覆盖。');
-  const zip=await globalThis.JSZip.loadAsync(task.buffer),prefix=fmt==='docx'?'word/':'xl/',paths=Object.keys(zip.files).filter(p=>p.startsWith(prefix)&&!zip.files[p].dir),locations=new Map(),referenced=new Set();
+  const zip=await globalThis.JSZip.loadAsync(task.buffer),prefix=fmt==='docx'?'word/':fmt==='pptx'?'ppt/':'xl/',paths=Object.keys(zip.files).filter(p=>p.startsWith(prefix)&&!zip.files[p].dir),locations=new Map(),referenced=new Set();
   for(const path of paths.filter(p=>p.endsWith('.rels'))){const d=xml(await zip.file(path).async('string')),owner=ownerFor(path);
    for(const r of all(d,'Relationship')){const type=r.getAttribute('Type')||'',target=r.getAttribute('Target')||'';
-    if(!/(image|oleObject|chart|diagram|package)$/.test(type))continue;
+    if(!/(image|oleObject|chart|diagram|package|audio|video)$/.test(type))continue;
     if(r.getAttribute('TargetMode')==='External'){blockers.push(`外链素材未下载：${owner}（请将素材嵌入文件）`);continue;}
     const p=norm(owner,target);referenced.add(p);locations.set(p,[...(locations.get(p)||[]),owner]);
     if(!zip.file(p))blockers.push(`缺少关联素材：${p}`);
@@ -28,8 +28,14 @@ export async function inspectReviewMedia(task){
   }
   const images=paths.filter(p=>p.includes('/media/')||referenced.has(p)&&IMAGE_EXT.test(p));
   for(const path of images){const readable=safeImage(path);assets.push(item('file:'+path,'image',(locations.get(path)||[path]).join('；'),{path,mimeType:mimeFor(path),readable,coverage:readable?'full':'unsupported'}));if(!readable)blockers.push(`图片格式或动画尚不支持完整审核：${path}`);}
+  if(fmt==='pptx'){
+   for(const path of paths.filter(p=>/^ppt\/(slides\/slide|notesSlides\/notesSlide)\d+\.xml$/.test(p)).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))){
+    const d=xml(await zip.file(path).async('string')),text=all(d,'p').map(p=>all(p,'t').map(t=>t.textContent).join('')).filter(Boolean).join('\n');
+    if(text.trim())supplementalText.push({id:'ppt:'+path,address:path,original:text,current:text,note:'品牌反馈附件，只读'});
+   }
+  }
   if(fmt==='docx'){
-   for(const path of paths.filter(p=>/\.xml$/.test(p)&&(/(?:document|header\d*|footer\d*|footnotes|endnotes)\.xml$/.test(p)))){
+   for(const path of paths.filter(p=>/\.xml$/.test(p)&&(/(?:document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$/.test(p)))){
     const d=xml(await zip.file(path).async('string'));
     for(const [i,p] of all(d,'p').entries()){
      let textbox=false;for(let n=p.parentElement;n;n=n.parentElement)if(n.localName==='txbxContent')textbox=true;

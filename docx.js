@@ -19,15 +19,12 @@ const paragraphs=doc=>wAll(doc,'p').filter(p=>!inside(p,'txbxContent'));
 function analyse(p){let locked=kids(p).some(c=>c.namespaceURI!==W||!PARA_OK.has(c.localName)),text='';for(const r of wAll(p,'r')){if(inside(r,'txbxContent'))continue;text+=runText(r);if(runLocked(r))locked=true;}return {text,locked,inTable:inside(p,'tc')};}
 export async function readDocx(buffer){
  let zip;try{zip=await globalThis.JSZip.loadAsync(buffer);}catch{throw Error('无法读取这个 .docx，请确认文件未加密、未损坏。');}
- let size=0;for(const entry of Object.values(zip.files))size+=entry._data?.uncompressedSize||0;
- if(size>60000000)throw Error('文档展开后超过 60 MB，请精简图片或拆分文件。');
  const file=zip.file('word/document.xml');if(!file)throw Error('这不是有效的 .docx：缺少 word/document.xml。');
  const doc=parse(await file.async('string'));
  if(['ins','del','moveFrom','moveTo'].some(n=>wAll(doc,n).length))throw Error('文档含修订痕迹。请先在 Word 中接受或拒绝全部修订，另存后再导入。');
  const cells=[];let k=0;
  paragraphs(doc).forEach((p,i)=>{const a=analyse(p);if(!a.text.trim())return;k++;cells.push({id:`p${i}`,address:`${a.inTable?'表格内 · ':''}段落 ${String(k).padStart(2,'0')}`,original:a.text,current:a.text,...(a.locked?{note:'含链接/图片/域，不能自动改写'}:{})});});
   if(!cells.length&&!wAll(doc,'drawing').length&&!wAll(doc,'pict').length&&!wAll(doc,'txbxContent').length)throw Error('没有读到可审校的文字或图片。');
- if(cells.reduce((n,c)=>n+c.original.length,0)>100000)throw Error('正文超过 10 万字，请分批审稿。');
  return {zip,cells};
 }
 // 红字：去掉原有颜色和 WPS 的 w14:textFill（它会盖过 w:color），并把 w:color 放在 rPr 的合法位置。

@@ -1,3 +1,4 @@
+import {feedbackFor} from './draft-feedback.js';
 // 品牌资料库与品牌反馈清单的纯函数。品牌原话原样保存；AI 或人拆出来的条目在人工确认前不生效。
 const NL=String.fromCharCode(10);
 export const DOC_KINDS=['Brief','产品资料','口径与禁用词','品牌反馈汇总','其他'];
@@ -32,8 +33,10 @@ export function splitFeedback(text){
 export const DOC_FB_LIMIT=Infinity;
 export function docFeedbackText(t,{limit=DOC_FB_LIMIT}={}){
  const raw=(t?.flow?.feedback||[]).filter(f=>String(f.text||'').trim()),list=(t?.fbItems||[]).filter(x=>x.status!=='draft'&&String(x.text||'').trim());
- if(!raw.length&&!list.length)return'';
+ const attached=feedbackFor(t);
+ if(!raw.length&&!list.length&&!attached.length)return'';
  const W={open:'待处理',done:'已处理',dropped:'不采纳'},parts=[];
+ if(attached.length)parts.push('本稿专属反馈（仅本稿本轮，附件图片须逐项读取）：'+NL+attached.map(f=>`【${f.title}】${NL}${f.text}`).join(NL));
  if(raw.length)parts.push('品牌原话（按时间先后）：'+NL+raw.map(f=>`- 第 ${f.round} 轮${f.extra?'（补充）':''}：${String(f.text).trim()}`).join(NL));
  if(list.length)parts.push('已确认的修改要求：'+NL+list.map(x=>`- [${W[x.status]||x.status}] 第 ${x.round} 轮：${String(x.text).trim()}${x.status==='dropped'&&x.note?`（不采纳原因：${x.note}）`:''}`).join(NL));
  let body=parts.join(NL+NL);if(body.length>limit)body=body.slice(0,limit)+NL+'（品牌反馈过长，已截断；完整内容见工作台这份稿件的品牌反馈区）';
@@ -42,7 +45,7 @@ export function docFeedbackText(t,{limit=DOC_FB_LIMIT}={}){
 // 审稿依据 = 项目笔记 + 品牌资料库（项目全局） + 这份稿件的品牌方反馈。网页“复制指令”和本机 AI 连接共用这一份。
 export function reviewNotes(t,p){
  const lib=p?libraryText(p):'',fb=docFeedbackText(t),rules=p?currentRulesText(p):'';
- return['【依据优先级】仅适用当前品牌项目。最新生效口径高于 Brief、产品资料及原始笔记；与旧资料冲突的部分按新口径执行，其余资料仍适用。已替代或停用的规则不得继续执行。本稿反馈只适用于本稿；与全局最新口径冲突时列出冲突请人核对。未明确替代且互相冲突的规则不要自行猜测。',rules&&('【最新生效口径（本项目全局，优先执行）】'+NL+rules),p?.notes||t?.notes,lib&&('【品牌资料库（当前启用，完整原文）】'+NL+lib),fb&&('【这份稿件的品牌方反馈（只适用于这份稿件）】'+NL+fb)].filter(Boolean).join(NL+NL);
+ return['【依据优先级】仅适用当前品牌项目。最新生效口径高于 Brief、产品资料及原始笔记；与旧资料冲突的部分按新口径执行，其余资料仍适用。已替代或停用的规则不得继续执行。本稿反馈只适用于本稿；与全局最新口径冲突时列出冲突请人核对。未明确替代且互相冲突的规则不要自行猜测。',rules&&('【最新生效口径（本项目全局，优先执行）】'+NL+rules),p?(p.notes||''):(t?.notes||''),lib&&('【品牌资料库（当前启用，完整原文）】'+NL+lib),fb&&('【这份稿件的品牌方反馈（只适用于这份稿件）】'+NL+fb)].filter(Boolean).join(NL+NL);
 }
 export function fbPrompt(raw,p,ctx){
  return `你是一位品牌内容审稿助理。下面是品牌方对一份达人稿件的反馈原话。请把它整理成逐条、可执行的修改清单。

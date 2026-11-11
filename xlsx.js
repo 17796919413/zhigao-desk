@@ -6,7 +6,7 @@ function xml(text){const d=new DOMParser().parseFromString(text,'application/xml
 function textOf(e){return children(e,'t').map(t=>t.textContent).join('')+children(e,'r').map(r=>first(r,'t')?.textContent||'').join('');}
 function path(base,target){if(target.startsWith('/'))return target.slice(1);const parts=base.split('/');parts.pop();for(const p of target.split('/')){if(p==='..')parts.pop();else if(p!=='.')parts.push(p);}return parts.join('/');}
 export async function readWorkbook(buffer){
- const zip=await globalThis.JSZip.loadAsync(buffer);let size=0;for(const entry of Object.values(zip.files))size+=entry._data?.uncompressedSize||0;if(size>60000000)throw Error('工作簿展开后超过 60 MB，请精简图片或拆分文件。');
+ const zip=await globalThis.JSZip.loadAsync(buffer);
  if(zip.file('xl/vbaProject.bin'))throw Error('暂不支持含宏的文件，请另存为 .xlsx 后导入。');
  const get=async p=>{const f=zip.file(p);if(!f)throw Error('缺少工作簿内容：'+p);return xml(await f.async('string'));};
  const workbook=await get('xl/workbook.xml'),rels=await get('xl/_rels/workbook.xml.rels');
@@ -23,7 +23,6 @@ export async function readWorkbook(buffer){
    const address=c.getAttribute('r');if(!/^[A-Z]+[0-9]+$/.test(address))continue;
    cells.push({id:`${sh.getAttribute('sheetId')}!${address}`,address,column:address.replace(/\d/g,''),row:Number(address.replace(/\D/g,'')),original:value,current:value,style:c.getAttribute('s')||'0',source:src,element:c});
   }
-  if(cells.length>10000)throw Error('单个工作表超过 10000 个文本单元格，请拆分后导入。');
   sheets.push({id:sh.getAttribute('sheetId'),name:sh.getAttribute('name'),path:sheetPath,cells,doc});
  }
  if(!sheets.length)throw Error('未找到可读取的工作表。');return {zip,sheets,styles};

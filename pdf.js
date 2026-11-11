@@ -12,7 +12,6 @@ function pageText(content){let s='';for(const it of content.items){if(typeof it.
 export async function readPdf(buffer){
  try{
   return await withPdf(buffer,async doc=>{
-   if(doc.numPages>200)throw Error('PDF 超过 200 页，请拆分后再导入。');
    const pages=[];for(let n=1;n<=doc.numPages;n++){const p=await doc.getPage(n),v=p.getViewport({scale:1});pages.push({n,text:pageText(await p.getTextContent()),w:Math.round(v.width),h:Math.round(v.height)});p.cleanup();}
    return {pages,textless:pages.every(p=>!p.text)};
   });
