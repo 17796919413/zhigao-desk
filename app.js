@@ -42,16 +42,16 @@ const date=s=>new Date(s).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',
 function openDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open('zhigao-desk',6);r.onupgradeneeded=()=>{for(const s of ['tasks','items','media','folders','batches','integrations'])if(!r.result.objectStoreNames.contains(s))r.result.createObjectStore(s,{keyPath:'id'});};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
 function dbOp(method,value,name='tasks'){return new Promise((resolve,reject)=>{const tx=db.transaction(name,method==='getAll'?'readonly':'readwrite'),store=tx.objectStore(name),r=value===undefined?store[method]():store[method](value);tx.oncomplete=()=>resolve(r.result);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
 // MCP 写入须确认数据库事务成功；失败不更新内存、不计完成。
-function persistAI(records,{required=[]}={}){return new Promise((resolve,reject)=>{
+function persistAI(records,{required=[],guard}={}){return new Promise((resolve,reject)=>{
  if(!db)return reject(Error('浏览器数据库不可用，审稿结果未保存。'));
  const tx=db.transaction([...new Set([...records.map(([store])=>store),...required.map(([store])=>store)])],'readwrite');let writeError;
  tx.oncomplete=resolve;tx.onerror=()=>reject(writeError||tx.error||Error('浏览器数据库写入失败。'));tx.onabort=()=>reject(writeError||tx.error||Error('浏览器数据库写入已取消。'));
- try{const write=()=>{for(const [store,value] of records)tx.objectStore(store).put(value);};let pending=required.length;if(!pending)write();else for(const [store,id] of required){const q=tx.objectStore(store).get(id);q.onsuccess=()=>{if(writeError)return;if(!q.result){writeError=Error('稿件或任务已删除，请刷新页面。');tx.abort();return;}if(!--pending)write();};}}catch(e){writeError=e;tx.abort();}
+ try{const write=()=>{try{guard?.();for(const [store,value] of records)tx.objectStore(store).put(value);}catch(e){writeError=e;tx.abort();}};let pending=required.length;if(!pending)write();else for(const [store,id] of required){const q=tx.objectStore(store).get(id);q.onsuccess=()=>{if(writeError)return;if(!q.result){writeError=Error('稿件或任务已删除，请刷新页面。');tx.abort();return;}if(!--pending)write();};}}catch(e){writeError=e;tx.abort();}
 });}
 function replaceBatch(b){const i=batches.findIndex(x=>x.id===b.id);if(i<0)batches.unshift(b);else batches[i]=b;}
 function refreshAIViews(){if(['home','history','item','review'].includes(page)&&!typing())render();}
 async function saveAgentBatch(b){await persistAI([['batches',b]]);replaceBatch(b);refreshAIViews();}
-async function commitAgentReview(t,b){const records=[['tasks',t]];if(b)records.push(['batches',b]);await persistAI(records,{required:[['tasks',t.id],...(b?[['batches',b.id]]:[])]});const old=tasks.find(x=>x.id===t.id);if(old)Object.assign(old,t);else tasks.unshift(t);if(b)replaceBatch(b);refreshAIViews();}
+async function commitAgentReview(t,b,guard){const records=[['tasks',t]];if(b)records.push(['batches',b]);await persistAI(records,{guard,required:[['tasks',t.id],...(b?[['batches',b.id]]:[])]});const old=tasks.find(x=>x.id===t.id);if(old)Object.assign(old,t);else tasks.unshift(t);if(b)replaceBatch(b);refreshAIViews();}
 // 默认保存当前打开的稿件；AI 连接可传入其他稿件。
 async function saveTask(doc=task){if(!doc)return;doc.updated=new Date().toISOString();const i=tasks.findIndex(t=>t.id===doc.id);if(i<0)tasks.unshift(doc);else tasks[i]=doc;const it=itemOf(doc);if(it)it.updated=doc.updated;if(db)try{await dbOp('put',doc);if(it)await dbOp('put',it,'items');}catch{toast('存储空间不足，请先导出稿件备份；当前稿件尚未保存到浏览器。');}else toast('当前浏览器不能保存历史，请在关闭页面前导出稿件。');}
 async function saveItem(it){it.updated=new Date().toISOString();if(!items.includes(it))items.unshift(it);if(db)try{await dbOp('put',it,'items');}catch{toast('存储空间不足，任务信息尚未保存到浏览器。');}}
@@ -489,7 +489,7 @@ const connections=createConnections({esc,btn,modal,toast,agent,project,
  installCommand:agentInstallCmd,macCommand:()=>`curl -o ~/zhigao-connector.mjs '${CONNECTOR_URL.replaceAll("'", "'\\''")}' && node ~/zhigao-connector.mjs install`,
  folder:id=>folders.get(id),folderState:id=>folderStates.get(id),
  folderAction:(action,b)=>actions[action](b),checkFeishu:()=>feishuLocal('status')});
-render();try{db=await openDB();tasks=await dbOp('getAll');items=await dbOp('getAll',undefined,'items');batches=await dbOp('getAll',undefined,'batches');extractions=await dbOp('getAll',undefined,'integrations');for(const f of await dbOp('getAll',undefined,'folders'))folders.set(f.id,f.handle);await migrate();await refreshFolderStates();render();}catch{toast('当前浏览器不能保存历史，请在关闭页面前导出稿件。');}
+render();try{db=await openDB();tasks=await dbOp('getAll');items=await dbOp('getAll',undefined,'items');batches=await dbOp('getAll',undefined,'batches');extractions=(await dbOp('getAll',undefined,'integrations')).filter(x=>!['review-knowledge','review-checkpoint'].includes(x.kind)&&Array.isArray(x.entries));for(const f of await dbOp('getAll',undefined,'folders'))folders.set(f.id,f.handle);await migrate();await refreshFolderStates();render();}catch{toast('当前浏览器不能保存历史，请在关闭页面前导出稿件。');}
 // AI 写入后：正在看的就是这份稿件且没有弹窗、没在输入时才刷新，免得打断用户。
 const typing=()=>$('#modal-root .modal')||['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName);
 // 品牌资料与规则保存在 localStorage；只有完整提交并核对后才报告成功。
@@ -504,12 +504,18 @@ function commitAgentProject(args={}){
  if(page==='rules'&&!typing())render();
  return{ok:true,project:p.name,projectId:p.id,libraryCount:(result.project.library||[]).length,ruleCount:effectiveRules(result.project).length,added:result.added,updated:result.updated,unchanged:result.unchanged,message:result.changed?'品牌资料与口径已保存。':'资料已是最新。'};
 }
+async function loadReviewKnowledge(projectId){const saved=db?await dbOp('get','review-knowledge:'+projectId,'integrations'):null;if(!saved)return null;const {id,projectId:_projectId,kind,...cache}=saved;return cache;}
+async function saveReviewKnowledge(projectId,cache){if(!db)throw Error('浏览器数据库不可用。');await dbOp('put',{id:'review-knowledge:'+projectId,projectId,kind:'review-knowledge',...cache},'integrations');}
+async function loadReviewProgress(docId){return db?dbOp('get','review-checkpoint:'+docId,'integrations'):null;}
+async function saveReviewProgress(checkpoint){if(!db)throw Error('浏览器数据库不可用。');await dbOp('put',{...checkpoint,kind:'review-checkpoint'},'integrations');}
+async function clearReviewProgress(docId){if(db)await dbOp('delete','review-checkpoint:'+docId,'integrations');}
 initAgent({state:()=>({settings,tasks,items,batches}),
- setupStatus:async({feishuStatus}={})=>{if(feishuStatus)connections.updateFeishu(feishuStatus);const p=project(),h=folders.get(p.id),state=h?await folderState(h):'none';folderStates.set(p.id,state);connections.refresh();return {state:'connected',version:'1.9.0',project:{id:p.id,name:p.name},archive:{state:folderSupported()?state:'unsupported',selected:!!h},feishuTable:{sourceLinked:!!p.feishu?.source?.url,refinedLinked:!!p.feishu?.refined?.url,access:'not_checked'},features:{localEditing:'available',aiReview:agent.state==='online'?'connected':'waiting',archive:state==='granted'?'authorized':'not_ready'}};},
+ setupStatus:async({feishuStatus}={})=>{if(feishuStatus)connections.updateFeishu(feishuStatus);const p=project(),h=folders.get(p.id),state=h?await folderState(h):'none';folderStates.set(p.id,state);connections.refresh();return {state:'connected',version:'1.10.0',project:{id:p.id,name:p.name},archive:{state:folderSupported()?state:'unsupported',selected:!!h},feishuTable:{sourceLinked:!!p.feishu?.source?.url,refinedLinked:!!p.feishu?.refined?.url,access:'not_checked'},features:{localEditing:'available',aiReview:agent.state==='online'?'connected':'waiting',archive:state==='granted'?'authorized':'not_ready'}};},
  openSetup:({section}={})=>{if(!['ai','feishu','folder'].includes(section))throw Error('请选择 ai、feishu 或 folder。');if($('#modal-root .modal')&&!$('#connections-body'))return {opened:false,state:'waiting_for_user',message:'请先完成或关闭当前弹窗。'};connections.open(section);return {opened:true,section,projectId:project().id,message:section==='folder'?'请在网页选择或授权本地文件夹；完成后重新查询接入状态。':'已展开现有连接设置。'};},
  updateProject:commitAgentProject,
  getMediaFile:async id=>(await dbOp('get',id,'media'))?.blob,
  getLibraryFile:async id=>(await dbOp('get',id,'media'))?.file,
+ loadReviewKnowledge,saveReviewKnowledge,loadReviewProgress,saveReviewProgress,clearReviewProgress,
  saveBatch:saveAgentBatch,commitReview:commitAgentReview,saveExtraction,prepareFeishuSync,publishExtraction,
  save:async t=>{await commitAgentReview(t);if(page==='review'&&task?.id===t.id&&!typing())render();},
  open:async id=>{closeModal();await actions['open-task']({dataset:{id}});},

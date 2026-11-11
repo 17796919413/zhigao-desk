@@ -1,27 +1,33 @@
-// Review completion is a checked contract, never a promise of semantic correctness.
+// Completion checks coverage and grounded evidence, not semantic infallibility.
 import {effectiveRules} from './brand.js';
 import {scan} from './engine.js';
-export const ASSURANCE_VERSION='1.9.0';
-export const stableJSON=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
-export async function digest(value){const bytes=typeof value==='string'?new TextEncoder().encode(value):value;return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');}
-export async function buildBasisManifest(task,project){
- const sources=[],add=(id,kind,title,text,extra={})=>{const raw=String(text||'');if(!raw.trim())return;const parts=[];for(const match of raw.matchAll(/[^。；;\n]+[。；;\n]?/g)){const value=match[0];for(let offset=0;offset<value.length;offset+=1200){const part=value.slice(offset,offset+1200);if(part.trim())parts.push({text:part,start:match.index+offset,end:match.index+offset+part.length});}}for(const [i,part] of parts.entries())sources.push({id:parts.length===1?id:id+':unit:'+(i+1),sourceId:id,kind,title:parts.length===1?title:title+' · 第'+(i+1)+'项',...part,...extra});};
- add('notes','notes','项目笔记',project.notes);
- for(const [i,d] of (project.library||[]).entries())if(d.active!==false)add('library:'+(d.id||i),d.kind,d.title,d.text,{ingestion:d.ingestion||null,source:d.source||'',updated:d.updated||''});
- for(const [i,f] of (task.flow?.feedback||[]).entries())add('feedback:'+i,'feedback',`第${f.round||1}轮品牌原话`,f.text);
- for(const [i,f] of (task.fbItems||[]).entries())if(f.status!=='draft')add('feedback-item:'+(f.id||i),'feedback-item',`反馈条目（${f.status}）`,f.text,{status:f.status});
- const rules=effectiveRules(project).map(r=>({id:r.id,title:r.title,description:r.description||'',type:r.type,find:r.find||'',replace:r.replace||'',action:r.action||'check',source:r.source||'',updated:r.updated||'',supersedes:r.supersedes||[]}));
- const value={schemaVersion:ASSURANCE_VERSION,projectId:project.id,projectName:project.name,rules,sources};
- const hash=await digest(stableJSON(value));
- return {...value,version:hash.slice(0,16),hash,hasBrandBasis:rules.length>0||sources.some(s=>s.kind!=='notes')};
+import {stableJSON,digest,sourceUnits,createKnowledgeCache,inspectFactConflicts} from './review-knowledge.js';
+export {stableJSON,digest} from './review-knowledge.js';
+export const ASSURANCE_VERSION='1.10.0';
+const defaultKnowledge=createKnowledgeCache();
+export async function buildBasisManifest(task,project,knowledge=defaultKnowledge){
+ const brand=await knowledge(project),sources=[...brand.sources];
+ for(const [i,f] of (task.flow?.feedback||[]).entries())sources.push(...sourceUnits('feedback:'+i,'feedback','第'+(f.round||1)+'轮品牌原话',f.text));
+ for(const [i,f] of (task.fbItems||[]).entries())if(f.status!=='draft')sources.push(...sourceUnits('feedback-item:'+(f.id||i),'feedback-item','反馈条目（'+f.status+'）',f.text,{status:f.status,note:f.note||'',advisoryOnly:f.status==='dropped'}));
+ const value={schemaVersion:ASSURANCE_VERSION,projectId:project.id,projectName:project.name,rules:brand.rules,sources},hash=await digest(stableJSON(value));
+ return {...value,version:hash.slice(0,16),hash,cache:brand.cache,sourceRevision:brand.sourceRevision,hasBrandBasis:brand.rules.length>0||sources.some(s=>s.kind!=='notes')};
 }
-export function assuranceInstruction(manifest){return `审核合同 ${ASSURANCE_VERSION}：必须回传 basis:${JSON.stringify({projectId:manifest.projectId,version:manifest.version,hash:manifest.hash})}。
-逐项提交 ruleChecks:[{id,status:"pass|issue|not_applicable|uncertain",reason,evidence:[{blockId,quote} 或 {assetId,detail}]}；全部生效规则都要有结论，无法确认写 uncertain，不得伪造证据。文字 quote 必须原样出现在对应原文里；图片证据引用实际读取的 assetId。
-逐项提交 sourceChecks:[{id,status:"checked|uncertain",quote,reason}]。资料按原句和段落拆为必核对单元（保留sourceId和原文位置），每个单元均须明确说明在稿件中如何核对或为何不适用，quote须出自该单元。不得只报整份资料已读或用引用片段代替全文核对。需人工判断的风险在warnings和条目中写明。
-素材清单中每项须调用 zhigao_read_review_asset 读取，再提交 mediaChecks:[{assetId,receipt,status:"reviewed|uncertain",summary,findings:[],coverage:"full|sampled"}]。receipt 只证明取到素材，不证明理解正确。不会看图或听音频要如实报告，不得仅凭文件名或OCR声称看过画面。视频必须先完成prepare_video_review的全音轨转写与逐帧准备；prepared-video-frame须全部审阅，frameTimeline说明每帧位置，仅完全相同的解码像素可共用一条画面核对。未完整准备的任意抽帧不能代替全片。转写、OCR和画面必须结合前后时间轴，意见注明时间点，原视频不直接改写。
-本次规则及资料清单：${JSON.stringify(manifest)}`;}
+export function assuranceInstruction(manifest){return [
+ '审核合同 '+ASSURANCE_VERSION+'。回传 basis:'+JSON.stringify({projectId:manifest.projectId,version:manifest.version,hash:manifest.hash})+'。',
+ '只采用本次当前品牌的原文和有效口径。最新有效口径优先于旧资料；明确替代、停用的旧规则不再执行。本稿反馈不外推其他稿件。未明确替代的冲突须指出，不能自行改写、增添品牌口径，也不能用个人记忆覆盖当前资料。',
+ '本稿反馈与全局最新口径冲突时须交回人工核对。status=dropped 的反馈仅供追溯，不按其修改；保留其中的不采纳原因。sourceChecks 标记 superseded 时必须填写 supersededBy，引用本次 rules 中明确适用的当前规则 ID，并解释替代关系；不能因此跳过本段其他要求。',
+ 'sources 是完整原文按位置分段，缓存只复用解析，不包含 AI 自拟结论。逐段核对其中所有要求，不得只核对引用的一句。context 中每个 nextCursor 都须用 zhigao_read_review_context 读到 null，未读部分不能算已审。',
+ 'ruleChecks:[{id,status:pass|issue|not_applicable|uncertain,reason,evidence:[{blockId,quote}或{assetId,detail}]}。每条都要具体理由和原文位置证据，不适用也须说明本稿哪些内容支持该判断。不得只写已核对、无问题。',
+ 'sourceChecks:[{id,status:checked|uncertain,quote,reason,application:applies|background|not_applicable|superseded,evidence:[{blockId,quote}或{assetId,detail}]}。quote引用资料中的完整相关语句；reason具体说明原要求在本稿如何落实、为何不适用或被哪条当前口径替代。背景资料也要核对其与当前稿件的关系，不能凭几个字勾选整段。',
+ '文字证据必须来自对应原文，短段引用完整，长段引用足够上下文；图像和声音证据只能引用本次实际读取的素材。',
+ '每个素材先 zhigao_read_review_asset，再提交 mediaChecks:[{assetId,receipt,status:reviewed|uncertain,summary,findings:[],coverage:full}]。summary描述实际画面文字/产品/人物或原声内容，不得仅写已读取。receipt只证明读取。所有唯一画面、连续原声、OCR/ASR及时间轴必须结合审阅。',
+ '长任务可 zhigao_record_review_checks 分批保存核对记录；它不标记审核完成。最后 zhigao_submit_review 提交修改和具体问题，可先 dryRun。资料变化收到 BASIS_CHANGED 后重取 brief(retry:true)，按 basisUpdate 继承最新资料；旧凭据和旧已审结论不能自动沿用。',
+ '事实机械检查只使用当前原文中的明确断言，不能替代语义审阅。未知、歧义、例外或不支持的画面如实报告；最终仍待人工确认。'
+ ].join(String.fromCharCode(10));}
 export function validateReviewAssurance(data,task,project,parsed,manifest,media={assets:[],blockers:[]},receipts={}){
  const blockingWarnings=[],warnings=[],valid=(x)=>typeof x==='string'&&!!x.trim();
+ const substantive=x=>valid(x)&&x.trim().length>=8&&!/^(?:已核对|已经核对|全部已审|符合要求|没有问题|无问题|不适用|read|checked|done)[。.!！\s]*$/i.test(x.trim());
+ const groundedQuote=(quote,text)=>valid(quote)&&text.includes(quote)&&quote.trim().length>=Math.min(16,text.trim().length);
  const block=s=>{if(!blockingWarnings.includes(s))blockingWarnings.push(s);};
  if(!data.basis)block('未回传品牌依据版本。');
  else if(data.basis.projectId!==manifest.projectId||data.basis.hash!==manifest.hash||data.basis.version!==manifest.version)throw Object.assign(Error('品牌或资料版本不匹配，请重新领取审稿指令。'),{code:'BASIS_MISMATCH'});
@@ -36,14 +42,21 @@ export function validateReviewAssurance(data,task,project,parsed,manifest,media=
  }
  const ruleChecks=checks('ruleChecks',manifest.rules,['pass','issue','not_applicable','uncertain']);
  const sourceChecks=checks('sourceChecks',manifest.sources,['checked','uncertain']);
- for(const s of manifest.sources){const x=sourceChecks.get(s.id);if(!x)continue;if(x.status!=='checked'||!valid(x.reason)||!valid(x.quote)||!s.text.includes(x.quote))block(`资料「${s.title}」缺少有效阅读证据。`);}
  function evidence(x){return Array.isArray(x.evidence)&&x.evidence.length>0&&x.evidence.every(e=>{
-  if(e?.blockId){const c=cells.get(e.blockId);return !!c&&valid(e.quote)&&String(c.current).includes(e.quote);}
-  return !!e?.assetId&&assets.has(e.assetId)&&!!receipts[e.assetId]&&valid(e.detail);
+  if(e?.blockId){const c=cells.get(e.blockId);return !!c&&groundedQuote(e.quote,String(c.current));}
+  return !!e?.assetId&&assets.has(e.assetId)&&!!receipts[e.assetId]&&substantive(e.detail);
  });}
- for(const r of manifest.rules){const x=ruleChecks.get(r.id);if(!x)continue;if(!valid(x.reason)||x.status!=='not_applicable'&&!evidence(x))block(`口径「${r.title}」缺少对应位置与证据。`);if(['issue','uncertain'].includes(x.status))warnings.push(`口径「${r.title}」：${x.reason||'需人工核对'}`);}
+ for(const s of manifest.sources){const x=sourceChecks.get(s.id);if(!x)continue;
+  if(x.status!=='checked'||!substantive(x.reason)||!groundedQuote(x.quote,s.text)||!['applies','background','not_applicable','superseded'].includes(x.application)||!evidence(x))block('资料「'+s.title+'」缺少具体原文引用、适用说明或对应稿件证据。');
+  if(x.application==='superseded'&&!manifest.rules.some(r=>r.id===x.supersededBy))block('资料「'+s.title+'」未绑定本次有效的替代口径。');
+  if(s.status==='dropped'&&x.application==='applies')block('不采纳反馈仅供追溯，不得作为本次修改依据：'+s.title);
+ }
+ for(const r of manifest.rules){const x=ruleChecks.get(r.id);if(!x)continue;
+  if(!substantive(x.reason)||!evidence(x))block('口径「'+r.title+'」缺少具体理由、对应位置与证据；不适用也必须说明。');
+  if(['issue','uncertain'].includes(x.status))warnings.push('口径「'+r.title+'」：'+(x.reason||'需人工核对'));
+ }
  const changes=new Map(parsed.changes.map(c=>[c.id,c.revised]));
- const corrected=(task.cells||[]).map(c=>({...c,original:changes.get(c.id)??c.current}));
+ const corrected=(task.cells||[]).map(c=>({...c,original:changes.get(c.id)??c.current,current:changes.get(c.id)??c.current}));
  const mechanicalFindings=scan(corrected,effectiveRules(project),task.platform);
  for(const f of mechanicalFindings){
   const rule=manifest.rules.find(r=>r.id===f.rule)||manifest.rules.find(r=>f.rule.startsWith(r.id+'-'));
@@ -51,16 +64,25 @@ export function validateReviewAssurance(data,task,project,parsed,manifest,media=
   if(typeof f.replacement==='string'&&f.replacement!==f.original&&!c?.note)block(`可执行修改仍未落实：${rule.title} · ${c?.address||f.cellId||'全文'}`);
   else if(!x||!['issue','uncertain'].includes(x.status)||f.cellId&&!x.evidence?.some(e=>e.blockId===f.cellId))block(`规则仍有命中但未逐位置报告：${rule.title} · ${c?.address||f.cellId||'全文'}`);
  }
+ const factFindings=inspectFactConflicts(manifest,corrected);
+ for(const f of factFindings){
+  const label=f.subject+'的'+f.attribute+'：稿件为'+f.actual+'，当前依据为'+f.expected.join(' / ');
+  if(f.conflictingSources){block('当前有效资料存在数值冲突，须核对来源：'+label);continue;}
+  const check=f.sourceIds.map(id=>sourceChecks.get(id)||ruleChecks.get(id)).find(x=>x&&evidence(x)&&x.evidence.some(e=>e.blockId===f.cellId||f.assetId&&e.assetId===f.assetId));
+  const remarks=[...parsed.warnings,...(data.mediaChecks||[]).filter(x=>x.assetId===f.assetId).flatMap(x=>x.findings||[])];
+  const reported=remarks.some(w=>typeof w==='string'&&w.includes(f.subject)&&w.includes(f.actual)&&f.expected.some(value=>w.includes(value)));
+  if(!f.readOnly||!check||!reported)block('数值与当前品牌依据不一致，修改或在只读原件意见中准确指出：'+label);
+ }
  const mediaValues=Array.isArray(data.mediaChecks)?data.mediaChecks:[],mediaChecks=new Map();
  for(const x of mediaValues){if(!x||!assets.has(x.assetId)||mediaChecks.has(x.assetId)){block('素材核对存在未知或重复条目。');continue;}mediaChecks.set(x.assetId,x);}
  for(const a of assets.values()){
   const x=mediaChecks.get(a.id),receipt=receipts[a.id];
-  if(!x||!receipt||x.receipt!==receipt.token||x.status!=='reviewed'||!valid(x.summary)||!Array.isArray(x.findings))block(`素材未完整审阅：${a.location||a.id}`);
+  if(!x||!receipt||x.receipt!==receipt.token||x.status!=='reviewed'||!substantive(x.summary)||!Array.isArray(x.findings))block(`素材未完整审阅：${a.location||a.id}`);
   if(a.coverage!=='full'||x?.coverage!=='full')block(`素材仅支持抽检或能力未就绪：${a.location||a.id}`);
   if(x?.findings)for(const f of x.findings)if(valid(f))warnings.push(`${a.location||a.id}：${f}`);else block(`素材意见格式不正确：${a.id}`);
  }
  for(const b of media.blockers||[])block(b);
  return {version:ASSURANCE_VERSION,projectRevision:project.date||'',basis:{projectId:manifest.projectId,version:manifest.version,hash:manifest.hash},complete:blockingWarnings.length===0,
   rules:{total:manifest.rules.length,checked:ruleChecks.size},sources:{total:manifest.sources.length,checked:sourceChecks.size},media:{total:assets.size,checked:[...mediaChecks.values()].filter(x=>x.status==='reviewed'&&receipts[x.assetId]?.token===x.receipt).length},
-  ruleChecks:[...ruleChecks.values()],sourceChecks:[...sourceChecks.values()],mediaChecks:[...mediaChecks.values()],blockingWarnings,warnings,mechanicalFindings:mechanicalFindings.map(f=>({rule:f.rule,cellId:f.cellId,title:f.title}))};
+  ruleChecks:[...ruleChecks.values()],sourceChecks:[...sourceChecks.values()],mediaChecks:[...mediaChecks.values()],blockingWarnings,warnings,factFindings,mechanicalFindings:mechanicalFindings.map(f=>({rule:f.rule,cellId:f.cellId,title:f.title}))};
 }

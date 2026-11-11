@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createReviewService,batchSummary} from '../review-service.js';
 import {buildBasisManifest,digest} from '../review-assurance.js';
+import {contextPage,contextSections,mergeReviewChecks,unreadContext} from '../review-context.js';
+import {createKnowledgeCache,extractFacts,inspectFactConflicts,sourceUnits} from '../review-knowledge.js';
 import {docFeedbackText} from '../brand.js';
 import {planProjectImport} from '../project-data.js';
 import {reviewToolResult} from '../zhigao-connector.mjs';
@@ -14,7 +16,9 @@ function fixture(){
  const service=createReviewService({state:()=>state,saveBatch:async b=>{state.batches=state.batches.filter(x=>x.id!==b.id).concat(b);},commitReview:async(x,b)=>{commits++;Object.assign(t,x);if(b)state.batches=state.batches.filter(v=>v.id!==b.id).concat(b);}});
  return {p,t,state,service,get commits(){return commits;}};
 }
-async function response(f,brief){const m=await buildBasisManifest(f.t,f.p);return {snapshot:brief.snapshot,basis:brief.basis,reviewedIds:brief.blocks.map(b=>b.id),patches:[{cellId:'p1',find:'BANNED',replace:'ALLOWED',reason:'Explicit current rule'}],ruleChecks:[{id:'r1',status:'issue',reason:'Corrected prohibited phrase',evidence:[{blockId:'p1',quote:'BANNED'}]}],sourceChecks:m.sources.map(s=>({id:s.id,status:'checked',quote:s.text,reason:'Read complete source'})),mediaChecks:[],warnings:[],blockingWarnings:[]};}
+async function readSection(f,brief,section){let cursor,rows=[];do{const page=await f.service.zhigao_read_review_context({docId:f.t.id,batchId:brief.batchId,reviewToken:brief.reviewToken,section,...(cursor?{cursor}:{})});rows.push(...page.items);cursor=page.nextCursor;}while(cursor);return rows;}
+async function readRequired(f,brief){for(const [section,meta] of Object.entries(brief.context))if(meta.required)await readSection(f,brief,section);}
+async function response(f,brief){await readRequired(f,brief);const m=await buildBasisManifest(f.t,f.p),blocks=await readSection(f,brief,'blocks'),ids=[...new Set(blocks.map(b=>b.id))];return {snapshot:brief.snapshot,basis:brief.basis,reviewedIds:ids,patches:[{cellId:'p1',find:'BANNED',replace:'ALLOWED',reason:'Explicit current rule'}],ruleChecks:[{id:'r1',status:'issue',reason:'Corrected prohibited phrase',evidence:[{blockId:'p1',quote:'BANNED'}]}],sourceChecks:m.sources.map(s=>({id:s.id,status:'checked',quote:s.text,reason:'Current source was read and compared with this draft position',application:'background',evidence:[{blockId:'p1',quote:'BANNED'}]})),mediaChecks:[],warnings:[],blockingWarnings:[]};}
 const send=(f,b,r,extra={})=>f.service.zhigao_submit_review({docId:f.t.id,reviewToken:b.reviewToken,result:r,dryRun:true,...extra});
 assert.equal(await digest('abc'),createHash('sha256').update('abc').digest('hex'));ok('Basis SHA256 matches standard implementation');
 let f=fixture(),b=await f.service.zhigao_get_review_brief({docId:'d1'}),r=await response(f,b);
@@ -35,5 +39,5 @@ let plan=planProjectImport([existing],[source],()=> 'new');assert.equal(plan.map
 plan=planProjectImport([existing],[{...source,id:'b'}]);assert.equal(plan.mapping.get('b'),'b');assert.equal(plan.projects.length,2);ok('Same name does not merge different project identities');
 plan=planProjectImport([source],[source]);assert.equal(plan.projects.length,1);ok('Same identity and source version reuse project');
 const image=reviewToolResult('zhigao_read_review_asset',{type:'image',mimeType:'image/png',data:'YWJj',assetId:'i',receipt:'r'});assert.equal(image.content[1].type,'image');assert(!image.content[0].text.includes('YWJj'));assert.throws(()=>reviewToolResult('zhigao_read_review_asset',{type:'image',mimeType:'image/svg+xml',data:'YWJj'}));ok('Connector emits native image content and rejects invalid image formats');
-f=fixture();f.t.fmt='video';f.t.cells=[];f.t.filename='sample.webm';f.t.duration=2;f.t.size=100;b=await f.service.zhigao_get_review_brief({docId:'d1'});const m=await buildBasisManifest(f.t,f.p);out=await send(f,b,{snapshot:b.snapshot,basis:b.basis,reviewedIds:[],sourceChecks:m.sources.map(s=>({id:s.id,status:'checked',quote:s.text,reason:'read'})),ruleChecks:[],mediaChecks:[]});assert(!out.coverage.complete);assert(b.media.assets.some(a=>a.type==='audio'));ok('Video and missing audio cannot be certified complete');
+f=fixture();f.t.fmt='video';f.t.cells=[];f.t.filename='sample.webm';f.t.duration=2;f.t.size=100;b=await f.service.zhigao_get_review_brief({docId:'d1'});await readRequired(f,b);const m=await buildBasisManifest(f.t,f.p);out=await send(f,b,{snapshot:b.snapshot,basis:b.basis,reviewedIds:[],sourceChecks:m.sources.map(s=>({id:s.id,status:'checked',quote:s.text,reason:'read'})),ruleChecks:[],mediaChecks:[]});assert(!out.coverage.complete);assert((await readSection(f,b,'assets')).some(a=>a.type==='audio'));ok('Video and missing audio cannot be certified complete');
 console.log(JSON.stringify({total:checks.length,checks},null,2));

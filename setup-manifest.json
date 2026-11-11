@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
@@ -66,7 +66,9 @@
     "setupVideoRuntime": "zhigao_setup_video_runtime",
     "prepareVideo": "zhigao_prepare_video_review",
     "videoStatus": "zhigao_get_video_review_status",
-    "readAsset": "zhigao_read_review_asset"
+    "readAsset": "zhigao_read_review_asset",
+    "readContext": "zhigao_read_review_context",
+    "recordChecks": "zhigao_record_review_checks"
   },
   "runtimeUpgrade": {
     "mode": "authenticated-idle-handoff",
@@ -122,7 +124,7 @@
   },
   "autoUpdate": {
     "protocol": 1,
-    "sha256": "179213865c4028438935f61907998c8d4c633bf1b64bb05962bb09fd014fedd4",
+    "sha256": "a33a5773cf951a4263d35475d68d1691261b3103a4bb0914b8839316392d02b6",
     "startup": true,
     "intervalHours": 6,
     "retryMinutes": 15,
@@ -131,7 +133,7 @@
   },
   "media": {
     "protocol": 1,
-    "version": "1.9.0",
+    "version": "1.10.0",
     "files": {
       "media-runtime.mjs": {
         "sha256": "d4ecda5d22b8eadd754ee8a4fba70da7aeb578cce8342b8a1c0e0c6277c06db9",
@@ -145,5 +147,12 @@
     "defaultModel": "large-v3-turbo",
     "installScope": "private-local",
     "semanticReview": "current-connected-agent"
+  },
+  "review": {
+    "protocolVersion": "1.10.0",
+    "context": "Read each required brief.context section through nextCursor=null; reconstruct json-fragment records and block slices without truncation.",
+    "checkpoint": "record_review_checks saves checks without completing review. Final explicit arrays replace saved arrays.",
+    "basisChanges": "BASIS_CHANGED requires retry:true, updates pages and a fresh full review. Previous checks are advisory only.",
+    "sourceCache": "Original parsed sources only; project and current source hashes verified; never writes derived policy to brand library."
   }
 }

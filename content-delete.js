@@ -19,10 +19,11 @@ export function deleteContentRecords(db,{docIds=[],itemId=null}){
     for(const b of snapshot.batches)for(const e of b.entries)if(!liveIds.has(e.docId)&&owners.some(i=>i.projectId===b.projectId&&i.author===e.author))ids.add(e.docId);
     for(const id of ids){tx.objectStore('tasks').delete(id);tx.objectStore('media').delete(id);}
     for(const id of removedItems)tx.objectStore('items').delete(id);
-    const updatedBatches=[],deletedBatches=[],updatedIntegrations=[];
+    const updatedBatches=[],deletedBatches=[],updatedIntegrations=[],deletedReviewCheckpoints=[];
     for(const b of snapshot.batches){const entries=b.entries.filter(e=>!ids.has(e.docId));if(entries.length===b.entries.length)continue;if(!entries.length){tx.objectStore('batches').delete(b.id);deletedBatches.push(b.id);}else{const updated={...b,entries,updated:new Date().toISOString()};tx.objectStore('batches').put(updated);updatedBatches.push(updated);}}
     for(const integration of snapshot.integrations){if(!integration.taskIds?.some(id=>removedItems.has(id)))continue;const updated={...integration,taskIds:integration.taskIds.filter(id=>!removedItems.has(id))};tx.objectStore('integrations').put(updated);updatedIntegrations.push(updated);}
-    result={docIds:[...ids],itemIds:[...removedItems],updatedBatches,deletedBatches,updatedIntegrations};
+    for(const integration of snapshot.integrations)if(integration.kind==='review-checkpoint'&&ids.has(integration.docId)){tx.objectStore('integrations').delete(integration.id);deletedReviewCheckpoints.push(integration.id);}
+    result={docIds:[...ids],itemIds:[...removedItems],updatedBatches,deletedBatches,updatedIntegrations,deletedReviewCheckpoints};
    }catch(e){abort(e);}
   };}
  });

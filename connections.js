@@ -37,7 +37,7 @@ export function createConnections(ctx) {
   })[ctx.agent.state] || ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'];
 
   function aiGuide() {
-    return `<ol class="connect-steps"><li>在电脑安装 Node.js，再打开 PowerShell。<a href="https://nodejs.org/zh-cn" target="_blank" rel="noopener">获取 Node.js ↗</a></li><li>复制并运行连接器安装命令。${command('connector', ctx.installCommand())}</li><li>重启 AI 客户端，点击“连接 AI”。浏览器询问本地网络访问时，选择允许。</li></ol>
+    return `<p>也可把本工作台网址发给能执行本机命令的 Agent，说“帮我接通知稿”，由它按<a href="./AGENT_SETUP.md" target="_blank" rel="noopener">接入说明</a>配置当前客户端。</p><ol class="connect-steps"><li>在电脑安装 Node.js，再打开 PowerShell。<a href="https://nodejs.org/zh-cn" target="_blank" rel="noopener">获取 Node.js ↗</a></li><li>复制并运行连接器安装命令。${command('connector', ctx.installCommand())}</li><li>在目标客户端重新加载知稿 MCP（必要时重启客户端），再点击“连接 AI”。浏览器询问本地网络访问时，选择允许。</li></ol>
       <p class="connect-note">模型在 AI 客户端中选择；审稿时保持工作台页面打开。</p>
       <details class="connect-more"><summary>其他客户端与 Mac</summary><p>支持 MCP 的客户端可手动添加 stdio 服务：命令填 <code>node</code>，参数填连接器的完整路径。</p><a href="./zhigao-connector.mjs" download="zhigao-connector.mjs">下载连接器</a><p>Mac：在终端运行以下命令，再重启客户端。</p>${command('mac', ctx.macCommand())}</details>
       <details class="connect-more"><summary>连接后仍无法使用</summary><p>客户端找不到知稿工具：重启客户端或重新加载 MCP。连接器未运行：重新执行安装命令。浏览器拦截本地网络：在网站设置中允许本地网络访问，再刷新页面。</p></details>
@@ -76,7 +76,7 @@ export function createConnections(ctx) {
       row('ai', 'AI 审稿', aiLabel, aiDesc, ['off','offline'].includes(ctx.agent.state) ? button('agent-on', '连接 AI') : '', aiGuide()) +
       row('feishu', '飞书同步', fsLabel, fsDesc, button('connect-check', checking ? '检查中…' : '检查连接', checking ? 'disabled' : ''), feishuGuide() + (['connector','update','origin'].includes(feishu.state) ? button('connect-expand', '设置连接器', 'data-section="ai"') : '')) +
       row('folder', '本地归档', folderLabel, folderDesc, folderSupported() ? button(folder && folderState !== 'granted' ? 'connect-folder-grant' : 'connect-folder-pick', folder ? folderState === 'granted' ? '更换文件夹' : '授权文件夹' : '选择文件夹', `data-pid="${esc(p.id)}"`) : '', `<p>为“${esc(p.name)}”选择一个文件夹，并在浏览器提示中允许保存。审稿完成后会自动归档。</p><p>浏览器再次询问时，点击“授权文件夹”。暂不设置时，可从稿件列表导出文件。</p><p>本地归档请使用桌面版 Edge 或 Chrome；其他浏览器可下载导出文件。</p>`) +
-      `<details class="connect-more connect-basics"><summary>其他功能怎么使用</summary><p>上传稿件、品牌资料、口径、批注和导出文件，直接在工作台操作。AI 审稿和反馈提取需要连接 AI；飞书提炼还需登录飞书。</p><p>Word、Excel 和文字稿可审核并导出修改稿；PDF、视频可查看并添加意见。图片和扫描件需先转成文字。</p><p>使用 AI：上传稿件 → 复制审稿提示词 → 粘贴到已连接的客户端 → 返回工作台查看结果。</p></details>`;
+      `<details class="connect-more connect-basics"><summary>其他功能怎么使用</summary><p>上传稿件、品牌资料、口径、批注和导出文件，直接在工作台操作。AI 审稿和反馈提取需要连接 AI；飞书提炼还需登录飞书。</p><p>Word、Excel 和文字稿可审核并导出修改稿；图片、PDF、扫描页和视频可由具备相应看图、听审能力的 AI 审核，输出意见，原件保持不变。视频首次使用需准备本机媒体组件。</p><p>使用 AI：上传稿件 → 复制审稿提示词 → 粘贴到已连接的客户端 → 返回工作台查看结果。</p></details>`;
   }
   function refresh() {
     const host = document.querySelector('#connections-body');

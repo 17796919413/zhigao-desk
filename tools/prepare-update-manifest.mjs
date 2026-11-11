@@ -26,6 +26,8 @@ manifest.media={protocol:1,version,files,defaultModel:'large-v3-turbo',installSc
 manifest.commands.mediaInspect=['node','zhigao-connector.mjs','media','doctor','--json'];
 manifest.commands.mediaSetup=['node','zhigao-connector.mjs','media','setup','--json'];
 Object.assign(manifest.mcpTools,{videoRuntimeStatus:'zhigao_video_runtime_status',setupVideoRuntime:'zhigao_setup_video_runtime',prepareVideo:'zhigao_prepare_video_review',videoStatus:'zhigao_get_video_review_status',readAsset:'zhigao_read_review_asset'});
+Object.assign(manifest.mcpTools,{readContext:'zhigao_read_review_context',recordChecks:'zhigao_record_review_checks'});
+manifest.review={protocolVersion:version,context:'Read each required brief.context section through nextCursor=null; reconstruct json-fragment records and block slices without truncation.',checkpoint:'record_review_checks saves checks without completing review. Final explicit arrays replace saved arrays.',basisChanges:'BASIS_CHANGED requires retry:true, updates pages and a fresh full review. Previous checks are advisory only.',sourceCache:'Original parsed sources only; project and current source hashes verified; never writes derived policy to brand library.'};
 manifest.completion.video='all frames and audio channels prepared; current brand basis, text, images and required audio reviewed; coverage.complete and assurance.complete true; human confirmation remains';
 manifest.autoUpdate={protocol:1,sha256:crypto.createHash('sha256').update(data).digest('hex'),startup:true,intervalHours:6,retryMinutes:15,applyWhen:'idle',launcherScheme:'zhigao-desk'};
 fs.writeFileSync(file,JSON.stringify(manifest,null,2)+'\n');

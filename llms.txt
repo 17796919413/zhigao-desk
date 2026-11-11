@@ -13,4 +13,8 @@
 
 1.9.0：视频依赖由连接器按同版本清单和内置 SHA-256 自动补齐，旧组件按版本隔离。先 video_runtime_status，缺项 setup_video_runtime 并轮询，再 prepare_video_review / get_video_review_status；准备完成后领取 brief，审核全部转写、OCR、逐帧画面、连续原声音频和当前品牌所有有效资料。不得只抽检，不另开云端语义服务。
 
-提交完整 basis、sourceChecks、ruleChecks、reviewedIds、mediaChecks，逐素材读取原生图像/音频并取得 receipt。coverage.complete 与 assurance.complete 同时为 true 才算覆盖完成，仍待人工复核。失败/中断按 retry:true 续跑；品牌或资料变化须重新领指令。换电脑用交接包传原件，不复用旧电脑任务凭据。
+1.10.0：brief 仅返回 context 目录，使用 zhigao_read_review_context 逐页读完所有必读分区。json-fragment 按 part 拼接还原 JSON，blocks 按 id/start/end 拼回全文。原文缓存按品牌和版本校验，不产生新口径。
+
+提交完整 basis、sourceChecks、ruleChecks、reviewedIds、mediaChecks；sourceChecks 包含 quote、application、reason 和稿件 evidence，superseded 绑定当前规则 supersededBy。可用 zhigao_record_review_checks 分批保存，最终省略字段从已存检查补入，显式数组完整替换。逐素材读取原生图像/音频并取得 receipt。coverage.complete 与 assurance.complete 同时为 true 才算工具层覆盖完成，仍待人工复核。
+
+BASIS_CHANGED 后 retry:true 重领凭据，阅读 basisUpdate 与 updates，再重新读完当前必读分区并核对。previousChecks 仅供参考，不能自动计入完成。页面刷新、租约到期或主动释放也需重领；旧游标和回执不可跨租约。换电脑用交接包传原件，不复用旧电脑任务凭据。

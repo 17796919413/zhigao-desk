@@ -9,7 +9,11 @@
 连接与授权面板提供“检查更新”，无需先连接 AI；检测到新版后可直接更新连接器。首次安装 1.8.2 后，连接器启动时检查一次，运行期间每 6 小时检查，网络失败 15 分钟后重试，任务空闲时应用。Windows 支持从页面唤起已安装的连接器；旧版本首次迁移见接入说明。
 
 
-当前版本为 **1.9.0**。
+当前版本为 **1.10.0**。
+
+1.10.0 将审稿资料改为完整分页读取，原文解析缓存按品牌和当前内容校验，分批核对支持保存及刷新恢复。资料变化会使旧凭据失效，返回更新目录供重新核对；旧检查仅供参考，不自动算已审。检查点保存失败不会提前推进内存，结果提交成功后的清理失败不会误报未提交。
+
+明确的产品数值断言增加机械冲突检查，支持空格、小数与单位换算；否定、范围、条件和例外仍由 Agent 对照完整原文审阅。结构校验和引用长度无法证明语义理解正确，最终仍待人工复核。
 
 1.9.0 补齐本机视频准备与品牌依据覆盖：Agent 自动检查并准备私有媒体组件，完整解码、逐画面 OCR、分音轨分声道转写，并读取全部画面和连续原声音频。品牌资料原句、有效规则、全部文字和素材均需逐项提交证据；缺项、跨品牌、旧版本依据和伪造读取凭据不能算完整。素材准备 complete 与审核覆盖 complete 由后台分别记录，最终仍待人工复核。
 
@@ -20,6 +24,7 @@ Word/Excel 内嵌图、PDF每页和品牌资料原件进入必审清单；图片
 ```sh
 node tools/prepare-update-manifest.mjs
 node tests/review_assurance_test.mjs
+node tests/review_context_test.mjs
 node tests/media_runtime_edge_test.mjs
 python -X utf8 tests/media_addons_test.py
 python -X utf8 -m unittest discover -s tests -p 'connector_*_test.py' -v

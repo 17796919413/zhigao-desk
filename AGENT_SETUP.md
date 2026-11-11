@@ -1,6 +1,6 @@
 # 接通知稿全部功能
 
-连接器版本 1.9.0。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
+连接器版本 1.10.0。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
 
 ## 入口与环境
 
@@ -130,7 +130,7 @@ Windows 的 setup/install 同时为当前用户注册 `zhigao-desk` 启动入口
 
 发布前运行 `node tools/prepare-update-manifest.mjs`，提交连接器与清单同一批次；核对发布的 LF 文件字节 SHA-256 与清单一致。网站发布只提供更新源，不会使完全未启动的电脑自行更新。
 
-## 5. 视频准备与当前品牌完整审核（1.9.0）
+## 5. 视频准备与当前品牌完整审核（1.10.0）
 
 ### 自动准备与换电脑
 
@@ -151,8 +151,8 @@ node ./zhigao-connector.mjs media setup --json
 
 1. `zhigao_status` 确认网页连接和当前品牌；用 `zhigao_list_tasks` 取得准确 docId，不按模糊项目名跨品牌找稿。
 2. `zhigao_prepare_video_review` 启动本机准备；查询 `zhigao_get_video_review_status` 到 complete。处理包含所有解码帧、仅像素完全相同的画面去重、每张唯一画面 OCR，以及所有音轨的每个声道独立完整转写，不混音、不按静音检测裁去转写内容。
-3. `zhigao_get_review_brief` 领取本次品牌依据、全部文字、资料单元、规则和素材清单。逐项 `zhigao_read_review_asset` 读取原生图像或原声音频。所有声道均分成连续短片段进入必听清单；低置信、空转写等额外标出理由。Agent 须核对品牌名、数字、否定词和画面含义，不能只看 ASR 或只抽几帧。
-4. 按当前资料及口径审稿，提交 snapshot、basis、sourceChecks、ruleChecks、reviewedIds、mediaChecks。素材核对须包含本次 receipt 和具体意见；receipt 证明读取，不证明理解正确。长任务用 `zhigao_renew_review` 续租；可先 dryRun 校验。
+3. `zhigao_get_review_brief` 领取凭据、basis 与 context 目录。调用 `zhigao_read_review_context` 读完每个 required=true 分区，逐页跟随 nextCursor 到 null；`json-fragment` 按 recordIndex/part 顺序拼接后 JSON.parse，还原完整条目；blocks 按同一 id 的 start/end 拼回全文。brief 不再内嵌 blocks、media 或所有原文。逐项 `zhigao_read_review_asset` 读取原生图像或原声音频。所有声道连续原声均须听审；不得只读 OCR/ASR 或只抽几帧。
+4. 按当前资料及口径审稿，提交 snapshot、basis、sourceChecks、ruleChecks、reviewedIds、mediaChecks。sourceChecks 提供完整相关原句、application、具体理由和稿件证据，superseded 须绑定当前有效 supersededBy；不采纳反馈不得作为修改依据。素材核对须包含本次 receipt 和具体意见。可用 `zhigao_record_review_checks` 分批保存检查，最终省略的检查字段从已存记录补入，显式数组完整替换该字段。长任务用 `zhigao_renew_review` 续租；可先 dryRun 校验。
 5. 仅当 coverage.complete、assurance.complete 均为 true 且 needsSupplement 为 false，才算工具层覆盖完成；仍为待人工复核，不代表品牌已通过。批次必须核对 complete、success、partial、failed、interrupted、skipped；处理结束不能替代全部覆盖完成。
 
 本机 complete 只表示素材准备完成。AI 不具备视觉或听审能力时，改用当前客户端支持这些输入的模型；能力仍不足则明确本稿未完成，不伪造“已看”“已听”或覆盖记录。图片/PDF/视频原件保持只读，输出审核意见报告；报告中的建议需要人工确认，不能当作已改好原片。
@@ -161,6 +161,7 @@ node ./zhigao-connector.mjs media setup --json
 
 - `failed` / `interrupted`：修复具体原因后调用 `zhigao_prepare_video_review({docId,retry:true})`。已验证的帧、OCR、音频检查点会复用；组件、模型或内容身份变化会使旧缓存失效。中断上传从已接收偏移继续。
 - 页面或审稿租约变化：重新领取对应稿件指令；品牌、资料版本或原件变化后不能提交旧结果。补漏用 reopen_review，完整替换结果并保留历史。
+- `BASIS_CHANGED`：`get_review_brief({docId,retry:true})` 领取新凭据，阅读 basisUpdate 摘要及 updates 分区，再完整读取当前必读资料并重新核对。previousChecks 只供参考，读取它不会继承完成状态；旧游标和旧凭据不可复用。分批保存失败时原进度仍可重试。已提交结果即使检查点清理失败仍返回 ok，同一凭据同一结果重交不会重复写入。
 - 资料原件丢失、外链图/图表/SmartArt或其他不支持对象：具体列出阻断项，不能忽略后报完整。
 - 长视频和动态画面会产生较多唯一画面与必听片段。继续按全部清单审核，不为减少成本偷偷抽帧；资源或传输限制应明确报未完成。
 
