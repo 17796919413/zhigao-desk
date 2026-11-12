@@ -1,7 +1,7 @@
 import {aiContextPrompt,parseAI,fingerprint} from './engine.js';
 import {reviewBlocks,reviewError,parseReview} from './review-protocol.js';
 import {ASSURANCE_VERSION,digest,buildBasisManifest,assuranceInstruction,validateReviewAssurance} from './review-assurance.js';
-import {inspectReviewMedia,readReviewAsset} from './media-review.js';
+import {createMediaInspector,readReviewAsset} from './media-review.js';
 import {feedbackFor} from './draft-feedback.js';
 import {reviewNotes,effectiveRules} from './brand.js';
 import {flowOf} from './model.js';
@@ -14,8 +14,10 @@ const unfinished=e=>['queued','reviewing','failed','interrupted'].includes(e.sta
 const now=()=>new Date().toISOString(),uid=()=>crypto.randomUUID(),copy=x=>structuredClone(x);
 const resultText=v=>JSON.stringify(typeof v==='string'?JSON.parse(v.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')):v);
 const fail=(code,message,details={})=>{throw reviewError(code,message,details);};
+const checkpointPayload=e=>({version:1,docId:e.docId,identity:e.resumeIdentity,projectId:e.basisRef?.projectId,reviewToken:e.reviewToken,snapshot:e.snapshot,round:e.round,media:e.media,contextDelivery:e.contextDelivery,savedChecks:e.savedChecks,mediaReceipts:e.mediaReceipts});
+const sealCheckpoint=e=>digest(stableJSON(checkpointPayload(e)));
 export function batchSummary(b){
- const entries=b.entries.map(({basis,basisRef,draftHash,basisChanges,savedChecks,contextDelivery,previousChecks,reviewToken,sessionId,submissionResult,mediaReceipts,media,...e})=>copy(e));
+ const entries=b.entries.map(({basis,resumeIdentity,checkpointSeal,basisRef,draftHash,basisChanges,savedChecks,contextDelivery,previousChecks,reviewToken,sessionId,submissionResult,mediaReceipts,media,...e})=>copy(e));
  const counts=Object.fromEntries(Object.keys(BATCH_STATES).map(s=>[s,entries.filter(e=>e.status===s).length]));
  const unknown=entries.filter(e=>e.status==='pending'&&!e.coverage?.reported).length;
  return {id:b.id,projectId:b.projectId,projectName:b.projectName,created:b.created,updated:b.updated,entries,counts,
@@ -25,7 +27,8 @@ export function batchSummary(b){
   next:'逐份获取指令并完整提交；校验失败用原凭据修正重交。结束核对 success、partial、coverageUnreported；审核未完成不计成功。补漏用 reopen_review，再提交完整替换结果。'};
 }
 export function createReviewService(ctx){
- const sessionId=uid(),S=()=>ctx.state(),singles=new Map(),knowledge=createKnowledgeCache({load:id=>ctx.loadReviewKnowledge?.(id),save:(id,value)=>ctx.saveReviewKnowledge?.(id,value)});let queue=Promise.resolve();
+ const progress=stage=>ctx.onReviewProgress?.(stage);
+ const sessionId=uid(),S=()=>ctx.state(),singles=new Map(),inspectMedia=createMediaInspector({onProgress:progress}),knowledge=createKnowledgeCache({load:id=>ctx.loadReviewKnowledge?.(id),save:(id,value)=>ctx.saveReviewKnowledge?.(id,value)});let queue=Promise.resolve();
  const project=id=>{const p=S().settings.projects.find(p=>p.id===id);if(!p)fail('PROJECT_NOT_FOUND','稿件所属项目不存在。');return p;};
   const doc=id=>{const t=S().tasks.find(t=>t.id===id);if(!t)fail('DOC_NOT_FOUND','找不到稿件，请先列出任务取得 docId。');if(t.projectId!==S().settings.selected)fail('PROJECT_MISMATCH','请在网页切换到稿件所属品牌，再读取或提交；当前品牌不能访问其他品牌稿件。');return t;};
   const batch=id=>{const b=(S().batches||[]).find(b=>b.id===id);if(!b)fail('BATCH_NOT_FOUND','找不到审稿批次。');if(b.projectId!==S().settings.selected)fail('PROJECT_MISMATCH','请切换到批次所属品牌。');return b;};
@@ -42,22 +45,23 @@ export function createReviewService(ctx){
   const checkDoc=t=>{if(project(t.projectId).status==='ended')fail('PROJECT_ENDED','项目已结束，不接受 AI 审稿。');if(!canDeepReview(t))fail('UNSUPPORTED_DOCUMENT','这份稿件没有可读取内容，不能计作已审。');};
  async function persist(b){b.updated=now();await ctx.saveBatch(b);return b;}
  async function persistEntry(t,b,e){
+  if(e.resumeIdentity)e.checkpointSeal=await sealCheckpoint(e);
   if(b){await persist(b);return;}
   await ctx.saveReviewProgress?.({id:'review-checkpoint:'+t.id,projectId:t.projectId,docId:t.id,entry:copy(e)});
   singles.set(t.id,copy(e));
  }
-  async function mediaFor(t){let media;if(t.fmt==='video'&&ctx.getVideoAnalysis){const a=await ctx.getVideoAnalysis(t);media={version:a.version,sourceHash:a.sourceHash+'|'+a.reportHash,assets:copy(a.assets),supplementalText:copy(a.supplementalText),blockers:copy(a.blockers||[]),warnings:copy(a.warnings||[]),frameTimeline:a.frames,videoCoverage:a.coverage,decodedFrames:a.decodedFrames};}else media=await inspectReviewMedia(t);const hashes=[media.sourceHash];for(const d of project(t.projectId).library||[]){if(d.active===false||!d.ingestion)continue;const source=d.ingestion.assetKey&&await ctx.getLibraryFile?.(d.ingestion.assetKey);if(!source){media.blockers.push(`品牌资料「${d.title}」缺少原件，无法验证其中的图片与页面。`);continue;}const m=await inspectReviewMedia(source);hashes.push(d.id+':'+m.sourceHash);if(m.sourceHash!==d.ingestion.sourceHash)media.blockers.push(`品牌资料「${d.title}」原件版本不一致。`);media.assets.push(...m.assets.map(a=>({...a,id:`library:${d.id}|${a.id}`,localAssetId:a.id,libraryAssetKey:d.ingestion.assetKey,location:`品牌资料「${d.title}」 · ${a.location}`})));media.blockers.push(...m.blockers.map(b=>`品牌资料「${d.title}」：${b}`));}for(const f of feedbackFor(t)){
+  async function mediaFor(t){let media;if(t.fmt==='video'&&ctx.getVideoAnalysis){const a=await ctx.getVideoAnalysis(t);media={version:a.version,sourceHash:a.sourceHash+'|'+a.reportHash,assets:copy(a.assets),supplementalText:copy(a.supplementalText),blockers:copy(a.blockers||[]),warnings:copy(a.warnings||[]),frameTimeline:a.frames,videoCoverage:a.coverage,decodedFrames:a.decodedFrames};}else media=await inspectMedia(t);const hashes=[media.sourceHash];for(const d of project(t.projectId).library||[]){if(d.active===false||!d.ingestion)continue;const source=d.ingestion.assetKey&&await ctx.getLibraryFile?.(d.ingestion.assetKey);if(!source){media.blockers.push(`品牌资料「${d.title}」缺少原件，无法验证其中的图片与页面。`);continue;}const m=await inspectMedia(source);hashes.push(d.id+':'+m.sourceHash);if(m.sourceHash!==d.ingestion.sourceHash)media.blockers.push(`品牌资料「${d.title}」原件版本不一致。`);media.assets.push(...m.assets.map(a=>({...a,id:`library:${d.id}|${a.id}`,localAssetId:a.id,libraryAssetKey:d.ingestion.assetKey,location:`品牌资料「${d.title}」 · ${a.location}`})));media.blockers.push(...m.blockers.map(b=>`品牌资料「${d.title}」：${b}`));}for(const f of feedbackFor(t)){
    if(!f.originalAsset)continue;
-   const m=await inspectReviewMedia(f.originalAsset);hashes.push('feedback:'+f.id+':'+m.sourceHash);
+   const m=await inspectMedia(f.originalAsset);hashes.push('feedback:'+f.id+':'+m.sourceHash);
    if(m.sourceHash!==f.ingestion?.sourceHash)media.blockers.push(`本稿反馈「${f.title}」原件版本不一致。`);
    media.assets.push(...m.assets.map(a=>({...a,id:`feedback:${f.id}|${a.id}`,feedbackId:f.id,location:`本稿反馈「${f.title}」 · ${a.location}`})));
    media.blockers.push(...m.blockers.map(b=>`本稿反馈「${f.title}」：${b}`));
   }media.sourceHash=await digest(JSON.stringify(hashes));return media;}
-  async function newLease(t,rereview=false,{manifest,media,identity,prior}){
+  async function newLease(t,rereview=false,{manifest,media,identity,prior},restore=false){
   const priorChecks=prior?.previousChecks||[];
   const checks=previousChecks(prior||{});
   const history=[...priorChecks,...checks];
-  return {status:'reviewing',reviewToken:uid(),sessionId,startedAt:now(),leaseExpiresAt:new Date(Date.now()+REVIEW_LEASE_MS).toISOString(),basis:identity.hash,basisRef:identity.ref,snapshot:fingerprint(t.cells),draftHash:identity.draftHash,media,contextDelivery:null,savedChecks:{},previousChecks:history,basisChanges:prior?.basisChanges||null,mediaReceipts:{},round:flowOf(t).round,rereview,reason:''};
+  return {docId:t.id,status:'reviewing',reviewToken:uid(),sessionId,startedAt:now(),lastActivityAt:now(),leaseExpiresAt:new Date(Date.now()+REVIEW_LEASE_MS).toISOString(),basis:identity.hash,resumeIdentity:identity.hash,basisRef:identity.ref,snapshot:fingerprint(t.cells),draftHash:identity.draftHash,media,contextDelivery:restore?{readThrough:copy(prior.contextDelivery?.readThrough||{}),cursors:{}}:null,savedChecks:restore?copy(prior.savedChecks||{}):{},previousChecks:restore?copy(prior.previousChecks||[]):history,basisChanges:restore?null:prior?.basisChanges||null,mediaReceipts:restore?copy(prior.mediaReceipts||{}):{},round:flowOf(t).round,rereview,reason:''};
  }
  // Compare live source state around asynchronous reads. Media is verified once per
  // operation; cached parsing never substitutes for current-original validation.
@@ -66,7 +70,7 @@ export function createReviewService(ctx){
   const before=stamp(),buffer=t.buffer,originalFile=t.originalFile;
   return ()=>{if(doc(t.id)!==t||t.buffer!==buffer||t.originalFile!==originalFile||stamp()!==before)fail('BASIS_CHANGED','读取或保存期间品牌依据、稿件或原件已变化，请用 retry:true 重领指令。',{docId:t.id});checkDoc(t);};
  }
- async function currentReview(t){const guard=stateGuard(t),manifest=await manifestFor(t),media=await mediaFor(t),identity=await leaseIdentity(t,manifest,media);guard();return {manifest,media,identity,guard};}
+ async function currentReview(t){const guard=stateGuard(t),manifest=await manifestFor(t),media=await mediaFor(t),identity=await leaseIdentity(t,manifest,media);guard();progress('basis-verified');return {manifest,media,identity,guard};}
  async function invalidateBasis(t,b,e,manifest,media,identity){
   const changes=basisChanges(e.basisRef,identity.ref);
   const draftChanged=e.draftHash!==identity.draftHash,mediaChanged=e.media?.sourceHash!==media.sourceHash;
@@ -74,7 +78,7 @@ export function createReviewService(ctx){
   // Keep only text-block IDs when any basis changes; never recycle those explanations.
   e.previousChecks=[...(e.previousChecks||[]),...previousChecks(e)].filter(c=>!changes.length&&!mediaChanged||c.kind==='reviewedIds');
   e.savedChecks={};e.basisChanges={changes,counts:{added:changes.filter(x=>x.change==='added').length,changed:changes.filter(x=>x.change==='changed').length,removed:changes.filter(x=>x.change==='removed').length},previous:{version:e.basisRef?.version||'',hash:e.basisRef?.hash||''},current:{version:identity.ref.version,hash:identity.ref.hash},draftChanged,mediaChanged};
-  Object.assign(e,{status:'interrupted',errorCode:'BASIS_CHANGED',reason:'本次审稿的品牌资料、稿件或素材已经变化，请重新领取并核对更新部分。'});delete e.reviewToken;e.contextDelivery=null;e.mediaReceipts={};e.basisChanges.previous.leaseKey=e.basis;e.basisChanges.current.leaseKey=identity.hash;
+  Object.assign(e,{status:'interrupted',errorCode:'BASIS_CHANGED',reason:'本次审稿的品牌资料、稿件或素材已经变化，请重新领取并核对更新部分。'});delete e.reviewToken;delete e.resumeIdentity;delete e.checkpointSeal;e.contextDelivery=null;e.mediaReceipts={};e.basisChanges.previous.leaseKey=e.basis;e.basisChanges.current.leaseKey=identity.hash;
   await persistEntry(t,b,e);
   return basisUpdateSummary(e.basisChanges);
  }
@@ -87,14 +91,16 @@ export function createReviewService(ctx){
   }
  }
  function leaseFor(t,batchId){if(batchId){const b=copy(batch(batchId));if(b.projectId!==t.projectId)fail('PROJECT_MISMATCH','稿件不属于批次锁定的项目。');return {b,e:entry(b,t.id)};}const e=singles.get(t.id);return {b:null,e:e?.basisRef?.projectId===t.projectId?copy(e):undefined};}
-  async function checkLease(t,b,e,reviewToken){
+  async function checkLease(t,b,e,reviewToken,{continuing=false,activity=true}={}){
   if(!e)fail('BRIEF_REQUIRED','请先获取这份稿件的审稿指令。');
   if(!reviewToken||reviewToken!==e.reviewToken)fail('TOKEN_MISMATCH','审稿凭据与这份稿件不匹配；请使用该 docId 的 brief 返回值。',{docId:t.id,status:e.status});
   if(e.errorCode==='SESSION_CHANGED'||e.sessionId!==sessionId)fail('SESSION_CHANGED','页面会话已变化，请用 retry:true 重新获取指令。',{docId:t.id});
-  if(e.status==='interrupted'&&e.errorCode==='TOKEN_EXPIRED'||Date.now()>=Date.parse(e.leaseExpiresAt))fail('TOKEN_EXPIRED','审稿租约已到期，请用 retry:true 重新获取指令。',{docId:t.id,leaseExpiresAt:e.leaseExpiresAt});
+  if(!continuing&&(e.status==='interrupted'&&e.errorCode==='TOKEN_EXPIRED'||Date.now()>=Date.parse(e.leaseExpiresAt)))fail('TOKEN_EXPIRED','审稿租约已到期，请用 retry:true 重新获取指令；内容版本一致且检查点完整时恢复进度。',{docId:t.id,leaseExpiresAt:e.leaseExpiresAt});
   if(e.status!=='reviewing')fail('REVIEW_NOT_ACTIVE',`这份稿件当前状态为 ${e.status}，请重新获取指令。`,{docId:t.id,status:e.status});
   if(flowOf(t).state!=='review')fail('BASIS_CHANGED','稿件状态已变化，请用 retry:true 重新获取指令。',{docId:t.id});
    const current=await currentReview(t),{manifest,media,identity}=current;if(identity.hash!==e.basis||e.snapshot!==fingerprint(t.cells)){const basisUpdate=await invalidateBasis(t,b,e,manifest,media,identity);fail('BASIS_CHANGED','审稿依据、稿件或素材已变化。请调用 zhigao_get_review_brief(retry:true)，先读 basisUpdate 与全部必读分区，再续审。',{docId:t.id,basisUpdate});}
+   if(activity)e.lastActivityAt=now();
+   if(Date.parse(e.leaseExpiresAt)-Date.now()<5*60*1000){e.leaseExpiresAt=new Date(Date.now()+REVIEW_LEASE_MS).toISOString();await persistEntry(t,b,e);current.guard();}
    return current;
  }
  async function brief({docId,batchId,retry=false,rereview=false}={}){
@@ -103,6 +109,7 @@ export function createReviewService(ctx){
   let {b,e}=leaseFor(t,batchId);
   if(!b&&!e){const saved=await ctx.loadReviewProgress?.(t.id);if(saved?.projectId===t.projectId&&saved.entry){e=copy(saved.entry);singles.set(t.id,e);}}
   const current=await currentReview(t);let basisUpdate=null,prior=e;
+  const restore=!!(retry&&!rereview&&e&&e.docId===t.id&&['reviewing','interrupted'].includes(e.status)&&(!e.errorCode||['SESSION_CHANGED','TOKEN_EXPIRED'].includes(e.errorCode))&&e.resumeIdentity===current.identity.hash&&e.round===flowOf(t).round&&e.snapshot===fingerprint(t.cells)&&e.checkpointSeal&&e.checkpointSeal===await sealCheckpoint(e)&&!current.media.blockers.length);
   if(e?.errorCode==='BASIS_CHANGED'&&e.basisChanges?.current?.leaseKey===current.identity.hash)basisUpdate=basisUpdateSummary(e.basisChanges);
   else if(e?.basisRef&&((e.basis&&e.basis!==current.identity.hash)||e.snapshot!==fingerprint(t.cells)||e.basisRef.hash!==current.manifest.hash||e.media?.sourceHash!==current.media.sourceHash)){basisUpdate=await invalidateBasis(t,b,e,current.manifest,current.media,current.identity);prior=e;if(!retry)fail('BASIS_CHANGED','审稿依据、稿件或素材已变化。请使用 retry:true 获取更新后的指令。',{docId:t.id,basisUpdate});}
   let reused=false;
@@ -110,16 +117,41 @@ export function createReviewService(ctx){
   else{
    if(t.ai&&!t.fullReviewPending&&!rereview&&!e?.rereview)fail('REREVIEW_REQUIRED','这份稿件已有结果；补漏或重审请调用 zhigao_reopen_review。');
    if(e&&['failed','interrupted','reviewing','skipped'].includes(e.status)&&!retry&&!rereview)fail('RETRY_REQUIRED','重新领取需 retry:true。',{status:e.status});
-   const fresh=await newLease(t,rereview||!!e?.rereview,{...current,prior});
+   const fresh=await newLease(t,rereview||!!e?.rereview,{...current,prior},restore);
    if(b){Object.assign(e,fresh);delete e.errorCode;await persist(b);}else{e=fresh;await persistEntry(t,null,e);}
   }
-  current.guard();const context=contextSections(t,current.manifest,e.media,e),p=project(t.projectId);
-  return {protocolVersion:ASSURANCE_VERSION,docId:t.id,project:{id:p.id,name:p.name},basis:{projectId:current.manifest.projectId,version:current.manifest.version,hash:current.manifest.hash},...(batchId?{batchId}:{}),reviewToken:e.reviewToken,snapshot:e.snapshot,leaseExpiresAt:e.leaseExpiresAt,leaseDurationMs:REVIEW_LEASE_MS,reused,context:contextSummary(context),instruction:aiContextPrompt(t,e.snapshot)+String.fromCharCode(10)+assuranceInstruction(current.manifest),
+  current.guard();const context=contextSections(t,current.manifest,e.media,e),p=project(t.projectId),summary=contextSummary(context,e);await persistEntry(t,b,e);current.guard();
+  return {protocolVersion:ASSURANCE_VERSION,docId:t.id,project:{id:p.id,name:p.name},basis:{projectId:current.manifest.projectId,version:current.manifest.version,hash:current.manifest.hash},...(batchId?{batchId}:{}),reviewToken:e.reviewToken,snapshot:e.snapshot,leaseExpiresAt:e.leaseExpiresAt,leaseDurationMs:REVIEW_LEASE_MS,reused,resume:{restored:restore,saved:Object.fromEntries(Object.entries(e.savedChecks||{}).map(([k,v])=>[k,v.length])),readAssets:Object.keys(e.mediaReceipts||{}).length},context:summary,instruction:aiContextPrompt(t,e.snapshot)+String.fromCharCode(10)+assuranceInstruction(current.manifest),
    ...(basisUpdate||e.basisChanges?{basisUpdate:basisUpdate||basisUpdateSummary(e.basisChanges)}:{}),
    ...(!basisUpdate&&!e.basisChanges&&e.rereview&&t.ai?{previousResult:{changes:t.ai.changes,warnings:t.ai.warnings,coverage:t.ai.coverage},replacement:'本次完整替换旧建议。保留仍有效的旧建议并补齐遗漏，旧结果在成功提交后进入历史。'}:{}),
-   howToSubmit:'先读取全部必读分区及素材。分批检查可保存后续核对；提交省略已保存的完整检查字段。BASIS_CHANGED 时用 retry:true 重取、核对更新项，并重新读完必读资料。审核结果仍待人工复核。'};
+   howToSubmit:'先读取未完成的必读分区，context.complete=true 可跳过，部分已读使用该分区 nextCursor 续读。resume.restored=true 时 savedChecks 分区提供同版本已保存的实际核对记录；只有回执但没有实际核对记录/视觉上下文的素材仍须看图。小批量素材可用 read_review_assets（最多4项）。提交可省略已保存字段。BASIS_CHANGED 后必须按新版本重新核对。审核结果仍待人工复核。'};
+ }
+ async function readAssets({docId,batchId,reviewToken,assetIds,time}){
+  if(!Array.isArray(assetIds)||!assetIds.length||assetIds.length>4||new Set(assetIds).size!==assetIds.length||assetIds.some(id=>typeof id!=='string'))fail('INVALID_ASSET_IDS','每次读取1至4个不同素材 ID；大图片请单独读取。');
+  const t=doc(docId),{b,e}=leaseFor(t,batchId),before=await checkLease(t,b,e,reviewToken),sources=new Map(),values=[];let bytes=0;
+  for(const assetId of assetIds){
+   const asset=e.media.assets.find(a=>a.id===assetId);if(!asset)fail('ASSET_NOT_FOUND','素材不属于本稿清单。',{assetId});
+   let source=t;
+   if(asset.feedbackId)source=feedbackFor(t).find(f=>f.id===asset.feedbackId)?.originalAsset;
+   else if(asset.libraryAssetKey){if(!sources.has(asset.libraryAssetKey))sources.set(asset.libraryAssetKey,await ctx.getLibraryFile(asset.libraryAssetKey));source=sources.get(asset.libraryAssetKey);}
+   if(!source)fail('ASSET_NOT_FOUND','素材原件已删除。',{assetId});
+   const value=['prepared-video-frame','prepared-video-audio'].includes(asset.type)?await ctx.readPreparedVideoAsset(t,asset.id):await readReviewAsset(source,asset,{time,blob:['video-frame','audio'].includes(asset.type)?await ctx.getMediaFile?.(t.id):undefined});
+   bytes+=value.data?.length||0;if(bytes>17*1024*1024)fail('ASSET_BATCH_TOO_LARGE','本批素材超过传输预算，请减少数量后重试；本批未发放回执。',{assetIds,maxItems:1});
+   before.guard();values.push({...value,assetId});progress('asset-rendered');
+  }
+  const current=await checkLease(doc(docId),b,e,reviewToken,{continuing:true});
+  const items=values.map(value=>{const receipt=e.mediaReceipts[value.assetId]||{token:uid(),at:now(),coverage:value.coverage};e.mediaReceipts[value.assetId]=receipt;return {...value,receipt:receipt.token,docId,basisProjectId:t.projectId};});
+  await persistEntry(t,b,e);current.guard();progress('checkpoint-saved');return {items,leaseExpiresAt:e.leaseExpiresAt};
  }
  const api={recover,exclusive:fn=>fn(),
+  async maintainLeases(){
+   const selected=S().settings.selected,candidates=[...singles.entries()].map(([docId,e])=>({docId,e}));
+   for(const b of S().batches||[])if(b.projectId===selected)for(const e of b.entries)candidates.push({docId:e.docId,batchId:b.id,e});
+   for(const c of candidates){const e=c.e,t=S().tasks.find(t=>t.id===c.docId);
+    if(t?.projectId!==selected||e.status!=='reviewing'||e.sessionId!==sessionId||Date.now()-Date.parse(e.lastActivityAt||e.startedAt)>20*60*1000||Date.parse(e.leaseExpiresAt)-Date.now()>5*60*1000)continue;
+    try{const {b,e:fresh}=leaseFor(doc(c.docId),c.batchId);await checkLease(t,b,fresh,fresh.reviewToken,{activity:false});}catch(error){if(!error.code)throw error;}
+   }
+  },
   async zhigao_create_review_batch({docIds}={}){
    await recover();const p=project(S().settings.selected);if(p.status==='ended')fail('PROJECT_ENDED','当前项目已结束。');
    if(docIds!==undefined&&(!Array.isArray(docIds)||!docIds.length||docIds.some(id=>typeof id!=='string')))fail('INVALID_DOC_IDS','docIds 须为非空稿件 ID 数组。');
@@ -136,7 +168,8 @@ export function createReviewService(ctx){
   zhigao_get_review_brief:brief,
   async zhigao_read_review_context({docId,batchId,reviewToken,section,cursor}){const t=doc(docId),{b,e}=leaseFor(t,batchId),current=await checkLease(t,b,e,reviewToken),all=contextSections(t,current.manifest,e.media,e),page=contextPage(e,all,section,cursor);await persistEntry(t,b,e);current.guard();return page;},
   async zhigao_record_review_checks({docId,batchId,reviewToken,basis,checks}={}){const t=doc(docId),{b,e}=leaseFor(t,batchId),current=await checkLease(t,b,e,reviewToken);if(!basis||basis.projectId!==current.manifest.projectId||basis.hash!==current.manifest.hash||basis.version!==current.manifest.version)fail('BASIS_MISMATCH','核对记录对应的品牌依据版本不匹配。');if(!checks||typeof checks!=='object'||Array.isArray(checks))fail('INVALID_CHECKS','checks 须为核对数组对象。');const all=contextSections(t,current.manifest,e.media,e),updated=mergeReviewChecks(e.savedChecks,checks);validateCheckIds(updated,{manifest:current.manifest,media:e.media,task:{...t,cells:[...t.cells,...e.media.supplementalText]}});e.savedChecks=updated;await persistEntry(t,b,e);current.guard();return {ok:true,saved:Object.fromEntries(Object.entries(updated).map(([key,value])=>[key,value.length])),unread:unreadContext(e,all)};},
-  async zhigao_read_review_asset({docId,batchId,reviewToken,assetId,time}){const t=doc(docId),{b,e}=leaseFor(t,batchId);await checkLease(t,b,e,reviewToken);const asset=e.media.assets.find(a=>a.id===assetId);if(!asset)fail('ASSET_NOT_FOUND','素材不属于本稿清单。');const source=asset.feedbackId?feedbackFor(t).find(f=>f.id===asset.feedbackId)?.originalAsset:asset.libraryAssetKey?await ctx.getLibraryFile(asset.libraryAssetKey):t;if(!source)fail('ASSET_NOT_FOUND','反馈原件已删除。');const value=['prepared-video-frame','prepared-video-audio'].includes(asset.type)?await ctx.readPreparedVideoAsset(t,asset.id):await readReviewAsset(source,asset,{time,blob:['video-frame','audio'].includes(asset.type)?await ctx.getMediaFile?.(t.id):undefined});const current=await checkLease(doc(docId),b,e,reviewToken),receipt=e.mediaReceipts[assetId]||{token:uid(),at:now(),coverage:value.coverage};e.mediaReceipts[assetId]=receipt;await persistEntry(t,b,e);current.guard();return {...value,receipt:receipt.token,docId,basisProjectId:t.projectId};},
+  async zhigao_read_review_asset({assetId,...args}){const result=await readAssets({...args,assetIds:[assetId]});return {...result.items[0],leaseExpiresAt:result.leaseExpiresAt};},
+  zhigao_read_review_assets:readAssets,
   async zhigao_reopen_review({docId,batchId}){const t=doc(docId);if(!batchId){const related=(S().batches||[]).filter(b=>b.projectId===t.projectId&&b.entries.some(e=>e.docId===docId&&e.round===flowOf(t).round));batchId=(related.find(b=>b.entries.some(e=>e.docId===docId&&['queued','reviewing'].includes(e.status)))||related.find(b=>b.id===t.ai?.batchId)||related.sort((a,b)=>String(b.created).localeCompare(String(a.created)))[0])?.id;}return brief({docId,batchId,retry:true,rereview:true});},
   async zhigao_renew_review({docId,batchId,reviewToken}){const t=doc(docId);checkDoc(t);const {b,e}=leaseFor(t,batchId);await checkLease(t,b,e,reviewToken);e.leaseExpiresAt=new Date(Date.now()+REVIEW_LEASE_MS).toISOString();await persistEntry(t,b,e);return {ok:true,docId,leaseExpiresAt:e.leaseExpiresAt};},
   async zhigao_release_review({docId,batchId,reviewToken,reason}){const t=doc(docId),{b,e}=leaseFor(t,batchId);if(!e||!reviewToken||reviewToken!==e.reviewToken||e.status!=='reviewing')fail('TOKEN_MISMATCH','这份稿件没有匹配的进行中审稿。');Object.assign(e,{status:'interrupted',reason:String(reason||'已主动释放，可重新获取指令。'),errorCode:'LEASE_RELEASED'});delete e.basis;await persistEntry(t,b,e);return {ok:true,docId,status:'interrupted'};},
@@ -160,7 +193,7 @@ export function createReviewService(ctx){
    validateCheckIds(data,{manifest,media:e.media,task:view});
    let parsed;try{parsed=parseReview(data,view,e.snapshot);}catch(error){if(error.code)throw error;fail('INVALID_RESULT',error.message);}
    const assurance=validateReviewAssurance(data,view,p,parsed,manifest,e.media,e.mediaReceipts);parsed.assurance=assurance;parsed.processingWarnings=copy(e.media.warnings||[]);parsed.blockingWarnings=[...new Set([...parsed.blockingWarnings,...assurance.blockingWarnings])];parsed.warnings=[...new Set([...parsed.warnings,...assurance.warnings,...(e.media.warnings||[]),...parsed.blockingWarnings])];parsed.coverage.complete=parsed.coverage.complete&&assurance.complete;parsed.needsSupplement=!parsed.coverage.complete;
-   if(dryRun)return {ok:true,validated:true,imported:0,changes:parsed.changes.length,coverage:parsed.coverage,assurance,needsSupplement:parsed.needsSupplement,leaseExpiresAt:e.leaseExpiresAt};
+   if(dryRun)return {ok:true,validated:true,complete:parsed.coverage.complete,validation:{schemaValid:true,evidenceComplete:assurance.complete},imported:0,changes:parsed.changes.length,coverage:parsed.coverage,assurance,needsSupplement:parsed.needsSupplement,leaseExpiresAt:e.leaseExpiresAt};
    const ai={...parsed,at:now(),submissionResult:raw,reviewToken,reviewIdentity:current.identity.hash,...(batchId?{batchId}:{})},updated={...t,ai,fullReviewPending:false,updated:now()};
    if(t.ai)updated.aiHistory=[...(t.aiHistory||[]),copy(t.ai)];
    const completed={...e,status:ai.needsSupplement?'partial':'pending',assuranceComplete:assurance.complete,completedAt:ai.at,reason:ai.needsSupplement?'文字、品牌依据或素材尚未完整核对，请查看缺项。':'',imported:ai.changes.length,warnings:ai.warnings.length,blockingWarnings:ai.blockingWarnings.length,coverage:copy(ai.coverage)};delete completed.basis;

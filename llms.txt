@@ -19,4 +19,10 @@
 
 提交完整 basis、sourceChecks、ruleChecks、reviewedIds、mediaChecks；sourceChecks 包含 quote、application、reason 和稿件 evidence，superseded 绑定当前规则 supersededBy。可用 zhigao_record_review_checks 分批保存，最终省略字段从已存检查补入，显式数组完整替换。逐素材读取原生图像/音频并取得 receipt。coverage.complete 与 assurance.complete 同时为 true 才算工具层覆盖完成，仍待人工复核。
 
-BASIS_CHANGED 后 retry:true 重领凭据，阅读 basisUpdate 与 updates，再重新读完当前必读分区并核对。previousChecks 仅供参考，不能自动计入完成。页面刷新、租约到期或主动释放也需重领；旧游标和回执不可跨租约。换电脑用交接包传原件，不复用旧电脑任务凭据。
+BASIS_CHANGED 后 retry:true 重领凭据，阅读 basisUpdate 与 updates，再重新读完当前必读分区并核对。previousChecks 仅供参考，不能自动计入完成。换电脑用交接包传原件，不复用旧电脑任务凭据。
+
+1.12.0：页面刷新或租约到期重领后，resume.restored=true 表示同品牌、稿件、轮次、版本的完整检查点已恢复。context.complete=true 可跳过传输，部分分区从新 nextCursor 续读；旧凭据和旧游标不可用。savedChecks 为已保存记录，只有读取回执仍不能冒充看图。主动释放、明确重审、旧版或损坏检查点不继承证明。活动期间自动续租。
+
+1.12.1：实际进展才能有界延长等待，心跳不代表进展。CALL_TRANSPORT_UNCERTAIN / CALL_EXECUTION_TIMEOUT 后不自动重新执行；先核对网页和保存状态。新网页声明支持工具，旧网页不支持时在空闲后刷新并重新加载 MCP 清单。多原生素材无法展示时按原清单回退单项，不减少审阅范围。PDF 超大画布或渲染失败须报告未读，不降分辨率冒充完成。doctor 区分安装、中转、网页版本和目录/端口问题。
+
+优先 read_review_assets 每批1至4项获取原生图像/音频及逐项回执，超出预算时减少数量；仍须实际逐项审阅。引用保留原文换行与空格，绑定准确单元 ID。dryRun 返回的 diagnostics 按 ID 和字段逐条定位错误；validated=true 不等于 complete=true。无需为读图编写脚本或并行重复领取凭据。工具超时需区分排队与执行，执行超时不能假定已取消，不要盲目重复提交。

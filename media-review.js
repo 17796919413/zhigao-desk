@@ -10,10 +10,24 @@ const all=(d,n)=>Array.from(d.getElementsByTagNameNS('*',n));
 const norm=(base,target)=>{const parts=target.startsWith('/')?[]:base.split('/').slice(0,-1);for(const p of target.split('/')){if(p==='..')parts.pop();else if(p&&p!=='.')parts.push(p);}return parts.join('/');};
 function ownerFor(rels){return rels.replace('/_rels/','/').replace(/\.rels$/,'');}
 function item(id,type,location,extra={}){return {id,type,location,required:true,readable:true,coverage:'full',...extra};}
-export async function inspectReviewMedia(task){
+// Reuse parsing only after hashing the current original and its page metadata.
+export function createMediaInspector({onProgress=()=>{}}={}){
+ const cache=new Map();let size=0;
+ return async task=>{
+  if(!task.buffer)return inspectReviewMedia(task);
+  const sourceHash=await digest(task.buffer),key=await digest(JSON.stringify({sourceHash,fmt:task.fmt,filename:task.filename,pages:task.pages}));
+  onProgress('source-verified');
+  const found=cache.get(key);if(found){cache.delete(key);cache.set(key,found);return structuredClone(found.value);}
+  const value=await inspectReviewMedia(task,{sourceHash,onProgress}),bytes=JSON.stringify(value).length*2;
+  onProgress('source-parsed');
+  if(bytes<=12*1024*1024){cache.set(key,{value:structuredClone(value),bytes});size+=bytes;while(cache.size>16||size>12*1024*1024){const first=cache.keys().next().value;size-=cache.get(first).bytes;cache.delete(first);}}
+  return value;
+ };
+}
+export async function inspectReviewMedia(task,verified={}){
  const assets=[],blockers=[],supplementalText=[];let sourceHash='text-only';
  const fmt=task.fmt||(task.buffer?'xlsx':'text');
- if(task.buffer)sourceHash=await digest(task.buffer);
+ if(task.buffer)sourceHash=verified.sourceHash||await digest(task.buffer);
  if(['docx','xlsx','pptx'].includes(fmt)){
   if(!task.buffer)throw Error('稿件原文件缺失，不能确认图片覆盖。');
   const zip=await globalThis.JSZip.loadAsync(task.buffer),prefix=fmt==='docx'?'word/':fmt==='pptx'?'ppt/':'xl/',paths=Object.keys(zip.files).filter(p=>p.startsWith(prefix)&&!zip.files[p].dir),locations=new Map(),referenced=new Set();
@@ -45,7 +59,7 @@ export async function inspectReviewMedia(task){
    }
   }
  }else if(fmt==='pdf'){
-  if(!task.buffer)throw Error('PDF原件缺失。');const pages=task.pages||(await readPdf(task.buffer)).pages;
+  if(!task.buffer)throw Error('PDF原件缺失。');const pages=task.pages||(await readPdf(task.buffer,verified.onProgress)).pages;
   for(const p of pages){assets.push(item('page:'+p.n,'pdf-page',`PDF第${p.n}页`,{page:p.n,mimeType:'image/png'}));if(p.text)supplementalText.push({id:'pdf-text:'+p.n,address:`PDF第${p.n}页文字`,original:p.text,current:p.text,note:'PDF只读，修改建议请写入 warnings'});}
  }else if(fmt==='image'){
   const readable=safeImage(task.filename);assets.push(item('image:original','image','图片原件',{mimeType:mimeFor(task.filename),readable,coverage:readable?'full':'unsupported'}));if(!readable)blockers.push('当前图片格式或动画尚不能完整审核，请提供静态 PNG/JPG/WebP。');

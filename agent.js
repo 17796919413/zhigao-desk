@@ -1,4 +1,5 @@
 import {createVideoProcessor} from './video-processing.js';
+import {WEB_VERSION} from './connector-updates.js';
 // 本机 AI 连接：网页长轮询本机连接器（zhigao-connector.mjs），执行 AI 客户端发来的工具调用。
 // 用户点“连接”后才开始访问本机；同一浏览器只允许一个标签页连接，避免两份内存状态互相覆盖。
 import {createReviewService,canDeepReview} from './review-batch.js';
@@ -13,13 +14,14 @@ const WRITES=new Set(['zhigao_update_project','zhigao_submit_review','zhigao_sub
 
 export const agent={state:'off',clients:[],log:[],version:''};
 let reviewService=null,videoProcessor=null;
-let ctx=null,abort=null,running=false,lockAbort=null;
-const pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
-export const agentWanted=()=>{try{return localStorage.getItem(KEY)==='on';}catch{return false;}};
+let ctx=null,abort=null,running=false,lockAbort=null,activeCall=null,maintaining=false,pollAbort=null,wakeConnection=null;
+let pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
+const preference=()=>{try{return localStorage.getItem(KEY);}catch{return null;}};
+export const agentWanted=()=>preference()==='on';
 const remember=on=>{try{localStorage.setItem(KEY,on?'on':'off');}catch{}};
 const set=(state,extra={})=>{Object.assign(agent,{state},extra);ctx?.changed();};
-const sleep=(ms,signal)=>new Promise(r=>{const t=setTimeout(r,ms);signal?.addEventListener('abort',()=>{clearTimeout(t);r();},{once:true});});
-async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data),signal,cache:'no-store'});if(!r.ok){const body=await r.json().catch(()=>({}));throw Object.assign(Error(body.error||`连接器返回 ${r.status}`),{code:body.code});}return r.json();}
+const sleep=(ms,signal)=>new Promise(r=>{const done=()=>{clearTimeout(t);signal?.removeEventListener('abort',done);r();},t=setTimeout(done,ms);if(signal?.aborted)done();else signal?.addEventListener('abort',done,{once:true});});
+async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data),signal:signal||AbortSignal.timeout(30000),cache:'no-store'});if(!r.ok){const body=await r.json().catch(()=>({}));throw Object.assign(Error(body.error||`连接器返回 ${r.status}`),{code:body.code,status:r.status});}return r.json();}
 
 // 飞书读取可由 MCP 发起；写入入口仍仅由网页中的人工确认操作调用。
 export async function feishuLocal(action,data={}){
@@ -51,7 +53,7 @@ const tools={
  async zhigao_publish_feishu_extraction({draftId,title,reviewedEntries}){return {ok:true,document:await ctx.publishExtraction(draftId,title,reviewedEntries)};},
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.11.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.12.1',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
@@ -72,6 +74,7 @@ const tools={
  zhigao_read_review_context:args=>reviewService.zhigao_read_review_context(args),
  zhigao_record_review_checks:args=>reviewService.zhigao_record_review_checks(args),
   zhigao_read_review_asset:args=>reviewService.zhigao_read_review_asset(args),
+  zhigao_read_review_assets:args=>reviewService.zhigao_read_review_assets(args),
  zhigao_submit_review:args=>reviewService.zhigao_submit_review(args),
  zhigao_get_feedback_brief({docId}){const t=docOf(docId),f=flowOf(t),fb=f.feedback.at(-1);if(!fb)throw Error('这份稿件还没有记录品牌反馈原话。请让用户先在网页上“记录品牌反馈”。');
   const p=S().settings.projects.find(p=>p.id===t.projectId)||findProject();
@@ -84,34 +87,64 @@ const tools={
 
 async function handle(call){
  const label=TOOL_LABELS[call.name]||call.name,at=new Date().toISOString();
+ activeCall={id:call.id,name:call.name,startedAt:at,sequence:0,phase:'executing'};
+ try{await post('/page/started',{pageId,id:call.id});}catch(e){if(e.code==='CALL_EXPIRED'){activeCall=null;return;}if(e.status!==404){activeCall=null;throw e;}}
  let res;
  try{const fn=tools[call.name];if(!fn)throw Error(`网页不支持工具 ${call.name}，请刷新工作台到最新版本。`);res={id:call.id,result:await fn(call.args||{})};agent.log.unshift({at,client:call.client,label,ok:true,...(res.result?.savedPath?{path:res.result.savedPath}:{})});}
  catch(e){res={id:call.id,error:e.message||String(e),errorCode:e.code||'REVIEW_ERROR',details:e.details||{}};agent.log.unshift({at,client:call.client,label,ok:false,error:res.error});}
+ activeCall.phase='delivering';
  agent.log.length=Math.min(agent.log.length,30);
  if(WRITES.has(call.name)&&res.result&&!call.args?.dryRun&&res.result.message)ctx.notify(call.name==='zhigao_submit_review'?(call.client||'AI')+' 已提交审稿建议':(call.client||'AI')+' '+res.result.message);
  ctx.changed();
- try{await post('/page/result',res);}catch{}
+  // Retry delivery of the same result, never re-execute the underlying tool.
+  let delivered=false,expired=false;
+  for(let attempt=0;attempt<3&&!delivered;attempt++)try{const ack=await post('/page/result',{...res,pageId});if(ack.accepted===false){expired=true;break;}delivered=true;}catch(error){if(error.code==='PAGE_SESSION_CHANGED')break;await sleep(500*(attempt+1));}
+  if(!delivered){agent.log.unshift({at:new Date().toISOString(),label:'结果回传失败',ok:false,error:expired?'请求已停止等待，操作结果未交给 AI；请检查已保存进度后续审，勿重复提交。':'操作已执行，但连接器未确认接收；请检查连接与稿件状态，勿重复提交。'});ctx.changed();}
+  activeCall=null;
+}
+
+// Only completed work emits progress. Heartbeats never increment this counter.
+function reviewProgress(stage){
+ const call=activeCall;if(!call||call.phase!=='executing')return;
+ call.sequence++;call.progress={sequence:call.sequence,stage};
+ if(call.reporting)return;
+ call.reporting=true;
+ (async()=>{try{while(activeCall===call){const progress=call.progress;await post('/page/progress',{pageId,id:call.id,progress},AbortSignal.timeout(5000));if(progress===call.progress)break;}}catch{}finally{call.reporting=false;}})();
 }
 
 async function loop(signal){
  let hello=true,wait=3000;
  while(!signal.aborted){
-  try{const r=await post('/page/poll',{pageId,title:document.title,hello},signal);hello=false;wait=3000;
+  try{pollAbort=new AbortController();const controller=pollAbort,onAbort=()=>controller.abort();signal.addEventListener('abort',onAbort,{once:true});const timer=setTimeout(onAbort,35000);let r;
+   try{r=await post('/page/poll',{pageId,title:document.title,hello,version:WEB_VERSION,tools:Object.keys(tools)},controller.signal);}finally{clearTimeout(timer);signal.removeEventListener('abort',onAbort);if(pollAbort===controller)pollAbort=null;}
+   hello=false;wait=3000;
    set(r.clients?.length?'online':'waiting',{clients:r.clients||[],version:r.version||agent.version});
    for(const c of r.calls||[])await handle(c);}
-  catch(e){if(signal.aborted)break;hello=true;set(e.code==='PAGE_IN_USE'?'other-tab':'offline',{clients:[]});await sleep(wait,signal);wait=Math.min(wait*2,15000);}
+  catch(e){if(signal.aborted)break;hello=true;if(e.code==='PAGE_SESSION_CHANGED'){set('other-tab',{clients:[]});break;}set(e.code==='PAGE_IN_USE'?'other-tab':'offline',{clients:[]});await sleep(wait,signal);wait=Math.min(wait*2,15000);}
  }
 }
-async function run(){abort=new AbortController();set('connecting');try{await reviewService.recover();await loop(abort.signal);}finally{running=false;}}
+async function run(){
+ abort=new AbortController();const signal=abort.signal;let beating=false;
+ set('connecting');
+ const beat=async()=>{
+  if(beating||signal.aborted)return;beating=true;
+  try{const r=await post('/page/heartbeat',{pageId,activeCall},AbortSignal.timeout(8000));if(!signal.aborted)set(r.clients?.length?'online':'waiting',{clients:r.clients||[]});}
+  catch(error){if(error.status===404)clearInterval(heartbeat);else if(!signal.aborted&&error.code!=='PAGE_SESSION_CHANGED')set('offline',{clients:[]});}finally{beating=false;}
+ };
+ const heartbeat=setInterval(beat,10000);
+ const wake=()=>{if(signal.aborted)return;beat();if(!activeCall)pollAbort?.abort();};wakeConnection=wake;
+ const maintenance=setInterval(async()=>{if(maintaining||signal.aborted||agent.state!=='online')return;maintaining=true;try{await reviewService.maintainLeases();}catch(error){agent.log.unshift({at:new Date().toISOString(),label:'自动续租失败',ok:false,error:error.message});}finally{maintaining=false;}},60000);
+ try{await reviewService.recover();await loop(signal);}finally{clearInterval(heartbeat);clearInterval(maintenance);if(wakeConnection===wake)wakeConnection=null;running=false;if(signal.aborted){disconnectPage();if(agentWanted())queueMicrotask(startAgent);}}
+}
 
 let discovering=false;
 async function discoverAgent(){
- if(discovering||running||document.hidden||localStorage.getItem(KEY)==='off')return;
- discovering=true;try{const r=await fetch(HUB+'/health',{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(2500)}),h=await r.json();if(h.app==='zhigao'&&localStorage.getItem(KEY)!=='off')startAgent();}catch{}finally{discovering=false;}
+ if(discovering||running||document.hidden||preference()==='off')return;
+ discovering=true;try{const r=await fetch(HUB+'/health',{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(2500)}),h=await r.json();if(h.app==='zhigao'&&preference()!=='off')startAgent();}catch{}finally{discovering=false;}
 }
-export function initAgent(c){ctx=c;videoProcessor=createVideoProcessor(c);reviewService=createReviewService({...c,getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();else discoverAgent();setInterval(discoverAgent,5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)discoverAgent();});}
+export function initAgent(c){ctx=c;videoProcessor=createVideoProcessor(c);reviewService=createReviewService({...c,onReviewProgress:reviewProgress,getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();else discoverAgent();setInterval(discoverAgent,5000);const wake=()=>{wakeConnection?.();discoverAgent();};document.addEventListener('visibilitychange',()=>{if(!document.hidden)wake();});window.addEventListener('online',wake);window.addEventListener('pageshow',wake);}
 export async function startAgent(){
- remember(true);if(running)return;running=true;set('connecting');
+ remember(true);if(running)return;pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);running=true;set('connecting');
  if(!navigator.locks)return run();
  lockAbort=new AbortController();
  const got=await navigator.locks.request('zhigao-agent',{ifAvailable:true},async l=>{if(!l)return false;await run();return true;});
@@ -119,7 +152,7 @@ export async function startAgent(){
 }
 const disconnectPage=()=>{try{navigator.sendBeacon(HUB+'/page/disconnect',JSON.stringify({pageId}));}catch{}};
 window.addEventListener('pagehide',disconnectPage);
-export function stopAgent(){disconnectPage();remember(false);lockAbort?.abort();abort?.abort();running=false;set('off',{clients:[]});}
+export function stopAgent(){remember(false);lockAbort?.abort();abort?.abort();if(!activeCall)disconnectPage();set('off',{clients:[]});}
 
 export const withReviewLock=fn=>reviewService?reviewService.exclusive(fn):fn();
 export const forgetReviews=ids=>reviewService?.forget(ids);

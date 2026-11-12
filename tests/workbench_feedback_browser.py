@@ -4,15 +4,16 @@ import functools,http.server,threading,subprocess,os,socket,time,json,urllib.req
 from playwright.sync_api import sync_playwright
 from mcp_client_fixture import MCP
 
+http.server.ThreadingHTTPServer.request_queue_size=128
 ROOT=Path(__file__).resolve().parents[1]
-OUT=ROOT.parent/'_verify'/'workbench-feedback-20261111';OUT.mkdir(parents=True,exist_ok=True)
-FIX=ROOT.parent/'_verify'/'assurance-20261110'/'fixtures'
+OUT=Path(os.environ.get('ZHIGAO_VERIFY_OUT',str(ROOT.parent/'_verify'/'workbench-feedback-20261111')));OUT.mkdir(parents=True,exist_ok=True)
+from synthetic_fixtures import png_bytes,pdf_bytes
 def zip_bytes(files):
  b=io.BytesIO()
  with zipfile.ZipFile(b,'w') as z:
   for name,value in files.items():z.writestr(name,value)
  return b.getvalue()
-PNG=(FIX/'normal.png').read_bytes()
+PNG=png_bytes()
 PPT=zip_bytes({'ppt/slides/slide1.xml':'<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>品牌原话：开头先介绍产品。</a:t></a:r></a:p></p:sld>',
  'ppt/notesSlides/notesSlide1.xml':'<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>备注：保留作者表达。</a:t></a:r></a:p></p:notes>',
  'ppt/slides/_rels/slide1.xml.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>', 'ppt/media/image1.png':PNG})
@@ -26,7 +27,9 @@ with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[
 backend=f'http://127.0.0.1:{port}'
 env={**os.environ,'ZHIGAO_PORT':str(port),'ZHIGAO_AUTO_UPDATE':'0','ZHIGAO_ORIGINS':origin}
 log=(OUT/'connector.log').open('w',encoding='utf-8')
-process=subprocess.Popen(['node',str(ROOT/'zhigao-connector.mjs'),'hub'],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
+home=OUT/'isolated-home';home.mkdir(exist_ok=True)
+connector=OUT/'test-connector.mjs';connector.write_text((ROOT/'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()',json.dumps(str(home))),encoding='utf-8')
+process=subprocess.Popen(['node',str(connector),'hub'],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
 checks=[];errors=[];client=None
 def passed(text):checks.append(text);print('PASS '+text,flush=True)
 try:
@@ -40,17 +43,17 @@ try:
   context=browser.new_context(viewport={'width':1440,'height':1100})
   context.route('http://127.0.0.1:47821/**',lambda route:route.continue_(url=backend+route.request.url.split('47821',1)[1]))
   page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
-  page.goto(origin);page.wait_for_selector('#agent-chip');page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('等待 AI')")
-  client=MCP(ROOT/'zhigao-connector.mjs',env,log,page)
+  page.goto(origin);page.wait_for_selector('#agent-chip');page.wait_for_function("document.querySelector('#agent-chip')?.textContent?.includes('等待 AI')")
+  client=MCP(connector,env,log,page)
   def raw(name,args=None):return client.call(name,args or {})
   def call(name,args=None):
    result=raw(name,args)
    assert not result.get('isError'),result
    return json.loads(next(c['text'] for c in result['content'] if c['type']=='text'))
   assert call('zhigao_status')['connected']
-  page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('已连接')")
+  page.wait_for_function("document.querySelector('#agent-chip')?.textContent?.includes('已连接')")
   passed('普通网址首次打开自动接通，真实 MCP 状态调用与网页在线标识一致')
-  second=context.new_page();second.goto(origin);second.wait_for_function("document.querySelector('#agent-chip').textContent.includes('其他标签页')")
+  second=context.new_page();second.goto(origin);second.wait_for_function("document.querySelector('#agent-chip')?.textContent?.includes('其他标签页')")
   second.close();passed('同浏览器第二标签页不会抢占连接')
   page.evaluate("async()=>{const m=await import('/agent.js');m.stopAgent();}")
   page.reload();page.wait_for_selector('#agent-chip');page.wait_for_timeout(2700)
@@ -70,7 +73,7 @@ try:
    {'name':'截图.png','mimeType':'image/png','buffer':PNG},
    {'name':'品牌反馈.docx','mimeType':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','buffer':DOCX},
    {'name':'品牌反馈.pptx','mimeType':'application/vnd.openxmlformats-officedocument.presentationml.presentation','buffer':PPT},
-   {'name':'品牌反馈.pdf','mimeType':'application/pdf','buffer':(FIX/'two-pages.pdf').read_bytes()}])
+   {'name':'品牌反馈.pdf','mimeType':'application/pdf','buffer':pdf_bytes(2)}])
   page.wait_for_function("document.querySelectorAll('.wb-feedback-entry').length===5",timeout=60000)
   assert '批注：增加使用场景' in page.locator('.wb-feedback').inner_text()
   assert '备注：保留作者表达' in page.locator('.wb-feedback').inner_text()
@@ -79,7 +82,13 @@ try:
   page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(OUT/'feedback-mobile.png'),full_page=True)
   assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
   page.set_viewport_size({'width':1440,'height':1100})
-  page.reload();page.wait_for_selector('.wb-row');page.locator('.wb-feedback summary').click();assert page.locator('.wb-feedback-entry').count()==5
+  page.reload()
+  try:page.wait_for_selector('.wb-row')
+  except Exception:
+   page.screenshot(path=str(OUT/'reload-failure.png'),full_page=True)
+   print('RELOAD_DIAGNOSTIC '+json.dumps({'pageErrors':errors,'body':page.locator('body').inner_text()[:2500],'settings':page.evaluate("localStorage.getItem('zhigao-settings-v1')")},ensure_ascii=False),flush=True)
+   raise
+  page.locator('.wb-feedback summary').click();assert page.locator('.wb-feedback-entry').count()==5
   passed('反馈和附件刷新后保留；手机页面无横向溢出')
   brief=call('zhigao_get_review_brief',{'docId':doc_id})
   def section(brief,name):

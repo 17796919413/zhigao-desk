@@ -1,14 +1,17 @@
 from pathlib import Path
 import functools,http.server,threading,subprocess,os,socket,time,json,urllib.request
 from playwright.sync_api import sync_playwright
-ROOT=Path(__file__).resolve().parents[1];OUT=ROOT.parent/'_verify'/'workbench-feedback-20261111'
+http.server.ThreadingHTTPServer.request_queue_size=128
+ROOT=Path(__file__).resolve().parents[1];OUT=Path(os.environ.get('ZHIGAO_VERIFY_OUT',str(ROOT.parent/'_verify'/'workbench-feedback-20261111')));OUT.mkdir(parents=True,exist_ok=True)
 class Handler(http.server.SimpleHTTPRequestHandler):
  def log_message(self,*args):pass
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Handler,directory=str(ROOT)));threading.Thread(target=server.serve_forever,daemon=True).start();origin=f'http://127.0.0.1:{server.server_port}'
 with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
 backend=f'http://127.0.0.1:{port}';log=(OUT/'extra-connector.log').open('w',encoding='utf-8')
 env={**os.environ,'ZHIGAO_PORT':str(port),'ZHIGAO_AUTO_UPDATE':'0','ZHIGAO_ORIGINS':origin}
-process=subprocess.Popen(['node',str(ROOT/'zhigao-connector.mjs'),'hub'],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
+home=OUT/'isolated-home';home.mkdir(exist_ok=True)
+connector=OUT/'test-connector.mjs';connector.write_text((ROOT/'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()',json.dumps(str(home))),encoding='utf-8')
+process=subprocess.Popen(['node',str(connector),'hub'],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
 try:
  for _ in range(60):
   try:

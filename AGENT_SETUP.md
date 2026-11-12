@@ -1,12 +1,16 @@
 # 接通知稿全部功能
 
-连接器版本 1.11.0。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
+连接器版本 1.12.1。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
 
 ## 入口与环境
 
 以用户提供的工作台地址为基础，读取同目录 `setup-manifest.json`。正式地址为 `https://17796919413.github.io/zhigao-desk/`。下载同目录 `zhigao-connector.mjs` 到本机工作目录，文件名保持不变。基础连接器是单文件程序，不需要下载整个网站。视频功能由连接器按同版本清单自动获取 media-runtime.mjs 和 media-worker.py；安装前同时核对连接器内置摘要及清单的 SHA-256，不让用户手工拼装组件。
 
 需要 Node.js 18+、能执行本机命令的 Agent、支持 MCP stdio 的审稿客户端。先运行 `node --version`。没有 Node.js 时按用户系统的常规安装方式处理；无法执行本机命令时，说明当前客户端不能代配置，并指向网站已有「连接与授权」教程。
+
+Node 缺失时连接器无法自行运行 doctor；应先检查当前客户端实际使用的可执行文件路径。安装 Node、飞书 CLI 或视频依赖仍须遵循用户授权，不为了接通自动进行全局安装。基础文本与图片审稿不依赖飞书登录或视频运行时。下载遇到代理、证书、网络错误时保留已有安装，按当前环境配置代理或让用户提供从同一发布来源取得的完整文件；不得关闭证书验证，不把下载失败当成授权过期反复登录。
+
+doctor 的 environment 仅报告当前 Node、系统和安装目录访问检查，不会通过写测试文件来证明目录可写。`foreign_listener` 表示端口上有其他或无法识别的服务；`INSTALL_PATH_CONFLICT`、`INSTALL_PERMISSION`、`INSTALL_STORAGE_FULL` 分别检查同名文件、目录权限和可用空间。不要为释放端口批量结束进程，也不要删除原有 .zhigao 文件来重试。
 
 示例下载（在 Agent 终端执行，不让用户逐条复制）：
 
@@ -130,7 +134,7 @@ Windows 的 setup/install 同时为当前用户注册 `zhigao-desk` 启动入口
 
 发布前运行 `node tools/prepare-update-manifest.mjs`，提交连接器与清单同一批次；核对发布的 LF 文件字节 SHA-256 与清单一致。网站发布只提供更新源，不会使完全未启动的电脑自行更新。
 
-## 5. 视频准备与当前品牌完整审核（1.11.0）
+## 5. 视频准备与当前品牌完整审核（1.12.0）
 
 ### 自动准备与换电脑
 
@@ -151,7 +155,7 @@ node ./zhigao-connector.mjs media setup --json
 
 1. `zhigao_status` 确认网页连接和当前品牌；用 `zhigao_list_tasks` 取得准确 docId，不按模糊项目名跨品牌找稿。
 2. `zhigao_prepare_video_review` 启动本机准备；查询 `zhigao_get_video_review_status` 到 complete。处理包含所有解码帧、仅像素完全相同的画面去重、每张唯一画面 OCR，以及所有音轨的每个声道独立完整转写，不混音、不按静音检测裁去转写内容。
-3. `zhigao_get_review_brief` 领取凭据、basis 与 context 目录。调用 `zhigao_read_review_context` 读完每个 required=true 分区，逐页跟随 nextCursor 到 null；`json-fragment` 按 recordIndex/part 顺序拼接后 JSON.parse，还原完整条目；blocks 按同一 id 的 start/end 拼回全文。brief 不再内嵌 blocks、media 或所有原文。逐项 `zhigao_read_review_asset` 读取原生图像或原声音频。所有声道连续原声均须听审；不得只读 OCR/ASR 或只抽几帧。
+3. `zhigao_get_review_brief` 领取凭据、basis 与 context 目录。调用 `zhigao_read_review_context` 读完 required=true 且 complete=false 的分区；部分已读从 brief 中的新 nextCursor 续读，到 null 为止。`json-fragment` 按 recordIndex/part 顺序拼接后 JSON.parse，还原完整条目；blocks 按同一 id 的 start/end 拼回全文。brief 不内嵌全部原文。优先 `zhigao_read_review_assets` 每批1至4项读取原生图像或原声音频；返回过大时减少批量，单项可用 `zhigao_read_review_asset`。不要为了提速重复领取凭据或编写回执脚本。所有声道连续原声均须听审；不得只读 OCR/ASR 或只抽几帧。
 4. 按当前资料及口径审稿，提交 snapshot、basis、sourceChecks、ruleChecks、reviewedIds、mediaChecks。sourceChecks 提供完整相关原句、application、具体理由和稿件证据，superseded 须绑定当前有效 supersededBy；不采纳反馈不得作为修改依据。素材核对须包含本次 receipt 和具体意见。可用 `zhigao_record_review_checks` 分批保存检查，最终省略的检查字段从已存记录补入，显式数组完整替换该字段。长任务用 `zhigao_renew_review` 续租；可先 dryRun 校验。
 5. 仅当 coverage.complete、assurance.complete 均为 true 且 needsSupplement 为 false，才算工具层覆盖完成；仍为待人工复核，不代表品牌已通过。批次必须核对 complete、success、partial、failed、interrupted、skipped；处理结束不能替代全部覆盖完成。
 
@@ -160,7 +164,14 @@ node ./zhigao-connector.mjs media setup --json
 ### 失败与恢复
 
 - `failed` / `interrupted`：修复具体原因后调用 `zhigao_prepare_video_review({docId,retry:true})`。已验证的帧、OCR、音频检查点会复用；组件、模型或内容身份变化会使旧缓存失效。中断上传从已接收偏移继续。
-- 页面或审稿租约变化：重新领取对应稿件指令；品牌、资料版本或原件变化后不能提交旧结果。补漏用 reopen_review，完整替换结果并保留历史。
+- 页面或租约变化：用 retry:true 重新领取对应稿件指令。resume.restored=true 表示同品牌、同稿件、同轮次、同内容版本且完整性校验通过的检查点已恢复；complete 分区无需重传，部分分区使用新 nextCursor，旧游标与旧凭据作废。savedChecks 分区提供已保存的实际核对记录；回执本身不代表看过图，缺少实际核对记录及视觉上下文时仍须读取素材。主动释放、明确重审、旧版无校验记录或检查点损坏时不继承完成证明。
+- 活动审稿自动续租，仍支持 renew_review；闲置任务不无限续租。BASIS_CHANGED 后不能提交旧结果。补漏用 reopen_review，完整替换结果并保留历史。
+- 引用必须是所填 ID 对应原文的连续子串，保留换行空格。dryRun 的 validated=true 只表示结构可解析，不代表完整；查看 complete、assurance.diagnostics 和 needsSupplement，一次修正具体字段。
+- PAGE_UNRESPONSIVE 表示没有收到心跳，不证明用户关了页面；CALL_QUEUE_TIMEOUT 表示未执行的排队请求已取消；CALL_EXECUTION_TIMEOUT / PAGE_BUSY 表示网页可能仍在执行，不要重复提交。恢复连接后核对批次或已保存结果。同 ID 结果回传可重试，不能把重新执行当作结果重传。
+- 1.12.1 排队最多90秒，通常执行最多180秒；只有已完成的来源验证、解析或素材渲染等实际进展可延至最多240秒，排队加执行最多270秒。心跳不延长执行，120秒无页面响应停止等待；这些期限不保证外部客户端愿意等待同样时长。`CALL_TRANSPORT_UNCERTAIN` 表示中转响应丢失，操作是否完成尚不确定，连接器不会自动重做。回到网页核对已保存结果再决定后续操作。
+- 后台/冻结页面仍有未确认执行时不允许另一页面抢占。页面完成或明确断开后可接续；浏览器进程崩溃且不能确认任务结束时可能保留占用，需先确认旧浏览器已退出、操作结果已核对，再按本机维护边界处理连接器。不能据此声称旧操作已被取消。
+- `PAGE_TOOL_UNSUPPORTED` 表示当前网页声明的工具清单不支持所调用工具。在空闲时刷新网页并重新发现客户端工具；不要反复领取审稿凭据。doctor 分别报告 installedVersion、runningVersion、pageVersion（旧网页不提供时为空）。支持工具不同才阻断调用，不因补丁版本不同一律拒绝。
+- 多素材响应被客户端拒绝或无法展示时，改用 `zhigao_read_review_asset` 逐项读取原清单；保留同一稿件、当前凭据、准确的素材与回执配对。不能把拿到回执当成实际看图/听审，也不静默跳过失败项。`PDF_CANVAS_LIMIT` / `PDF_RENDER_FAILED` 必须明确本页未读，处理超大页面或浏览器资源后重读。
 - `BASIS_CHANGED`：`get_review_brief({docId,retry:true})` 领取新凭据，阅读 basisUpdate 摘要及 updates 分区，再完整读取当前必读资料并重新核对。previousChecks 只供参考，读取它不会继承完成状态；旧游标和旧凭据不可复用。分批保存失败时原进度仍可重试。已提交结果即使检查点清理失败仍返回 ok，同一凭据同一结果重交不会重复写入。
 - 资料原件丢失、外链图/图表/SmartArt或其他不支持对象：具体列出阻断项，不能忽略后报完整。
 - 长视频和动态画面会产生较多唯一画面与必听片段。继续按全部清单审核，不为减少成本偷偷抽帧；资源或传输限制应明确报未完成。

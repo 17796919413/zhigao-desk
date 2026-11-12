@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.11.0",
+  "version": "1.12.1",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
@@ -68,7 +68,8 @@
     "videoStatus": "zhigao_get_video_review_status",
     "readAsset": "zhigao_read_review_asset",
     "readContext": "zhigao_read_review_context",
-    "recordChecks": "zhigao_record_review_checks"
+    "recordChecks": "zhigao_record_review_checks",
+    "readAssets": "zhigao_read_review_assets"
   },
   "runtimeUpgrade": {
     "mode": "authenticated-idle-handoff",
@@ -124,7 +125,7 @@
   },
   "autoUpdate": {
     "protocol": 1,
-    "sha256": "02040e891ea02cddd52a6a4b32317d4581a899b4020b463f93fcd89a6ac62f06",
+    "sha256": "547cb2d27b2e05f7e66f4da8a3526cdec31712cbd9b7d12ae9cae96f5bbbc519",
     "startup": true,
     "intervalHours": 6,
     "retryMinutes": 15,
@@ -133,7 +134,7 @@
   },
   "media": {
     "protocol": 1,
-    "version": "1.11.0",
+    "version": "1.12.1",
     "files": {
       "media-runtime.mjs": {
         "sha256": "3f1be5cad6fb02a19d39cd0b00a2472caa5a6aeab3802b0efcc877d5aa6d6f55",
@@ -149,10 +150,16 @@
     "semanticReview": "current-connected-agent"
   },
   "review": {
-    "protocolVersion": "1.11.0",
+    "protocolVersion": "1.12.1",
     "context": "Read each required brief.context section through nextCursor=null; reconstruct json-fragment records and block slices without truncation.",
     "checkpoint": "record_review_checks saves checks without completing review. Final explicit arrays replace saved arrays.",
     "basisChanges": "BASIS_CHANGED requires retry:true, updates pages and a fresh full review. Previous checks are advisory only.",
-    "sourceCache": "Original parsed sources only; project and current source hashes verified; never writes derived policy to brand library."
+    "sourceCache": "Original parsed sources only; project and current source hashes verified; never writes derived policy to brand library.",
+    "resume": "retry:true can restore verified checkpoints only for unchanged identity and round; use resume.restored and new context cursors. savedChecks are actual saved records, receipts alone do not establish visual review.",
+    "assets": "read_review_assets returns 1-4 native images/audio with independent receipts; reduce batch on ASSET_BATCH_TOO_LARGE.",
+    "connection": "Queue 90s; execution 180s, extended only by completed-work progress up to 240s; queue plus execution max 270s. Heartbeats do not extend work. Transport uncertainty never auto-reexecutes a call. A stale executing page retains ownership until completion/disconnect.",
+    "lease": "Active work renews automatically; explicit renew_review remains available. Idle work is not renewed indefinitely.",
+    "compatibility": "New pages advertise tools and version. Unsupported tools fail before queueing. Old pages keep legacy single-asset support; inspect installed/running/page versions separately and reload client tool discovery when idle.",
+    "resourceLimits": "PDF canvas allocation is rejected above 40 million pixels or 32767 per dimension; no silent downscaling. This is not a total process memory limit."
   }
 }

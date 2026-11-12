@@ -1,5 +1,14 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="面向品牌策划的内容审稿工作台。按项目规则审校稿件，逐字标红，保留原文件结构。"><meta name="theme-color" content="#111111"><link rel="help" type="text/markdown" href="./AGENT_SETUP.md" title="Agent 接入说明"><link rel="alternate" type="text/plain" href="./llms.txt" title="Agent 入口"><link rel="alternate" type="application/json" href="./setup-manifest.json" title="接入清单"><title>知稿 · AI 审稿工作台</title><link rel="stylesheet" href="./style.css"><script defer src="./vendor/jszip.min.js"></script><script type="module" src="./app.js"></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="面向品牌策划的内容审稿工作台。按项目规则审校稿件，逐字标红，保留原文件结构。"><meta name="theme-color" content="#111111"><link rel="help" type="text/markdown" href="./AGENT_SETUP.md" title="Agent 接入说明"><link rel="alternate" type="text/plain" href="./llms.txt" title="Agent 入口"><link rel="alternate" type="application/json" href="./setup-manifest.json" title="接入清单"><title>知稿 · AI 审稿工作台</title><link rel="stylesheet" href="./style.css"><script defer src="./vendor/jszip.min.js"></script><script type="module">
+try { await import('./app.js'); }
+catch {
+ const panel=document.createElement('div');panel.className='empty';panel.setAttribute('role','alert');
+ const heading=document.createElement('h1');heading.textContent='页面未能加载';
+ const message=document.createElement('p');message.textContent='请检查网络后刷新；不会清除已保存的稿件。若仍失败，请把发生时间和浏览器版本交给支持人员。';
+ const retry=document.createElement('button');retry.className='button primary';retry.textContent='刷新重试';retry.onclick=()=>location.reload();
+ panel.append(heading,message,retry);document.getElementById('app').replaceChildren(panel);
+}
+</script></head>
 <!-- Agent setup: read ./AGENT_SETUP.md and ./setup-manifest.json. Start with ./llms.txt. -->
-<body><div id="app"></div><div id="toast" role="status" aria-live="polite"></div><div id="modal-root"></div></body></html>
+<body><div id="app"><div class="empty" role="status">正在加载工作台…<noscript>请启用浏览器的 JavaScript 后刷新。</noscript></div></div><div id="toast" role="status" aria-live="polite"></div><div id="modal-root"></div></body></html>

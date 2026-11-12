@@ -3,7 +3,7 @@ import {stableJSON} from './review-knowledge.js';
 
 export const CONTEXT_PAGE_CHARACTERS=18000;
 const required=['sources','rules','blocks','assets','timeline','media'];
-const sections=[...required,'updates','previousChecks'];
+const sections=[...required,'updates','previousChecks','savedChecks'];
 // Fragment transport records, never edit or truncate the user's source.
 export function textParts(text,size=4000){
  const out=[];for(let start=0;start<text.length;){let end=Math.min(start+size,text.length);const ch=text.charCodeAt(end-1);if(end<text.length&&ch>=0xD800&&ch<=0xDBFF)end--;out.push({text:text.slice(start,end),start,end});start=end;}return out;
@@ -14,10 +14,14 @@ export function contextSections(task,manifest,media,entry={}){
  const metadata=new Map(reviewBlocks(fullTask).map(b=>[b.id,b]));
  const {assets=[],frameTimeline=[],supplementalText,...info}=media;
  const updates=Array.isArray(entry.basisChanges)?entry.basisChanges:entry.basisChanges?.changes||[];
- const rows={sources:manifest.sources,rules:manifest.rules,blocks:fullTask.cells.filter(c=>metadata.has(c.id)).flatMap(c=>textParts(String(c.current),6000).map(p=>({...metadata.get(c.id),...p}))),assets,timeline:frameTimeline,media:[info],updates,previousChecks:entry.previousChecks||[]};
+ const rows={sources:manifest.sources,rules:manifest.rules,blocks:fullTask.cells.filter(c=>metadata.has(c.id)).flatMap(c=>textParts(String(c.current),6000).map(p=>({...metadata.get(c.id),...p}))),assets:assets.map(a=>({...a,...(entry.mediaReceipts?.[a.id]?{readReceipt:entry.mediaReceipts[a.id].token}:{} )})),timeline:frameTimeline,media:[info],updates,previousChecks:entry.previousChecks||[],savedChecks:Object.entries(entry.savedChecks||{}).flatMap(([kind,values])=>values.map(value=>({kind,value})))};
  return Object.fromEntries(sections.map(s=>[s,bounded(rows[s])]));
 }
-export function contextSummary(all){return Object.fromEntries(sections.map(s=>[s,{total:all[s].length,required:required.includes(s)}]));}
+export function contextSummary(all,entry){return Object.fromEntries(sections.map(s=>{
+ const read=Math.min(entry?.contextDelivery?.readThrough?.[s]||0,all[s].length);let nextCursor=null;
+ if(read>0&&read<all[s].length&&entry){const delivery=entry.contextDelivery;nextCursor=Object.entries(delivery.cursors).find(([,v])=>v.section===s&&v.start===read)?.[0]||crypto.randomUUID();delivery.cursors[nextCursor]={section:s,start:read};}
+ return [s,{total:all[s].length,required:required.includes(s),read,complete:read===all[s].length,nextCursor}];
+}));}
 export function createContextDelivery(){return {readThrough:{},cursors:{}};}
 export function contextPage(entry,all,section,cursor){
  if(!sections.includes(section))throw reviewError('INVALID_CONTEXT_SECTION','未知资料分区，请使用 brief.context 列出的名称。');
@@ -42,7 +46,17 @@ export function mergeReviewChecks(stored={},incoming={}){
 }
 export function validateCheckIds(checks,all){
  const expected={ruleChecks:new Set(all.manifest.rules.map(x=>x.id)),sourceChecks:new Set(all.manifest.sources.map(x=>x.id)),mediaChecks:new Set(all.media.assets.map(x=>x.id)),reviewedIds:new Set(reviewBlocks(all.task).map(x=>x.id))};
- for(const [key,id] of Object.entries(keys))for(const item of checks[key]||[])if(!expected[key].has(id?item[id]:item))throw reviewError('INVALID_CHECKS',key+' 包含不属于当前稿件或依据的 ID。');
+ const diagnostics=[];
+ for(const [key,id] of Object.entries(keys)){
+  const values=checks[key];if(values===undefined)continue;
+  if(!Array.isArray(values)){diagnostics.push({section:key,field:key,code:'ARRAY_REQUIRED'});continue;}
+  const seen=new Set();values.forEach((item,index)=>{const value=id?item?.[id]:item;
+   if(!expected[key].has(value))diagnostics.push({section:key,index,id:value??null,field:id||key,code:'UNKNOWN_ID'});
+   else if(seen.has(value))diagnostics.push({section:key,index,id:value,field:id||key,code:'DUPLICATE_ID'});
+   seen.add(value);
+  });
+ }
+ if(diagnostics.length)throw reviewError('INVALID_CHECKS','核对记录存在未知或重复 ID，或数组格式错误；请按 diagnostics 一次修正。',{diagnostics});
 }
 // Notices identify changes; they never synthesize replacement brand policy.
 export function basisChanges(previous,current){

@@ -65,15 +65,19 @@ class RuntimeTests(unittest.TestCase):
 
     def write(self, source=SOURCE, version=None):
         if version:
-            source = source.replace("const VERSION = '1.11.0'", f"const VERSION = '{version}'")
+            source = source.replace("const VERSION = '1.12.1'", f"const VERSION = '{version}'")
         self.script.write_text(source.replace('os.homedir()', json.dumps(str(self.home))), encoding='utf-8')
 
-    def start(self, *args, name=None):
+    def start(self, *args, name=None, capture_initialize=False):
         p = subprocess.Popen([NODE, str(self.script), *args], env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
         self.processes.append(p)
         if name:
             p.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'clientInfo': {'name': name}, 'protocolVersion': '2025-06-18'}}) + '\n')
             p.stdin.flush()
+            # Drain the handshake as a real MCP host does. Leaving it unread can
+            # fill Windows' pipe buffer and block Node before hub registration.
+            if not capture_initialize:
+                self.assertEqual(json.loads(p.stdout.readline())['id'], 1)
         return p
 
     def request(self, route, data=None, auth=False, origin=None, secret=None, timeout=15):
@@ -124,7 +128,7 @@ class RuntimeTests(unittest.TestCase):
     def test_idle_upgrade_and_feishu_status(self):
         old = self.old_hub()
         self.start(name='new-client')
-        h = self.wait_health(lambda h: h['version'] == '1.11.0')
+        h = self.wait_health(lambda h: h['version'] == '1.12.1')
         self.assertIn('new-client', h['clients'])
         old.wait(timeout=6)
         status, body = self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)
@@ -148,7 +152,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(poll['calls']), 1)
             self.request('/page/result', {'id': poll['calls'][0]['id'], 'result': {'preserved': True}}, origin=ORIGIN)
             self.assertEqual(call.result()[1], {'result': {'preserved': True}})
-        self.wait_health(lambda h: h['version'] == '1.11.0', timeout=9)
+        self.wait_health(lambda h: h['version'] == '1.12.1', timeout=9)
 
     def test_feishu_inflight_blocks_repair(self):
         self.env['FAKE_DELAY'] = '1800'
@@ -167,9 +171,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_handoff_auth_downgrade_and_uninstalled_version_rejected(self):
         self.old_hub()
-        status, _ = self.request('/agent/handoff', {'version': '1.11.0'}, True, secret='wrong-secret')
+        status, _ = self.request('/agent/handoff', {'version': '1.12.1'}, True, secret='wrong-secret')
         self.assertEqual(status, 403)
-        status, _ = self.request('/agent/handoff', {'version': '1.11.0'}, True, ORIGIN)
+        status, _ = self.request('/agent/handoff', {'version': '1.12.1'}, True, ORIGIN)
         self.assertEqual(status, 403)
         for version in ('1.7.0', '1.8.0', '9.0.0', 'invalid'):
             status, _ = self.request('/agent/handoff', {'version': version}, True)
@@ -180,17 +184,19 @@ class RuntimeTests(unittest.TestCase):
         self.old_hub()
         self.start(name='client-a')
         self.start(name='client-b')
-        h = self.wait_health(lambda h: h['version'] == '1.11.0' and {'client-a', 'client-b'} <= set(h['clients']))
+        h = self.wait_health(lambda h: h['version'] == '1.12.1' and {'client-a', 'client-b'} <= set(h['clients']))
         self.assertIn(h['pid'], {p.pid for p in self.processes})
 
     def test_workbuddy_probe_lists_tools_without_claiming_hub(self):
         self.write()
-        p = self.start(name='workbuddy-mcp-probe:custom-mcp:zhigao')
+        p = self.start(name='workbuddy-mcp-probe:custom-mcp:zhigao', capture_initialize=True)
         self.assertEqual(json.loads(p.stdout.readline())['id'], 1)
         p.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}) + '\n')
         p.stdin.flush()
         reply = json.loads(p.stdout.readline())
         self.assertIn('zhigao_setup_status', {t['name'] for t in reply['result']['tools']})
+        context_tool = next(t for t in reply['result']['tools'] if t['name'] == 'zhigao_read_review_context')
+        self.assertIn('savedChecks', context_tool['inputSchema']['properties']['section']['enum'])
         time.sleep(.2)
         self.assertIsNone(self.health())
         p.stdin.close()
@@ -214,20 +220,20 @@ class RuntimeTests(unittest.TestCase):
             self.assertIsNone(old.poll())
         code, report = self.cli_command('repair', '--restart-legacy', '--confirm-idle', '--json')
         self.assertEqual(code, 0, report)
-        self.assertEqual(report['runningVersion'], '1.11.0')
+        self.assertEqual(report['runningVersion'], '1.12.1')
         old.wait(timeout=5)
         self.assertEqual(self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)[0], 200)
 
     def test_newer_runtime_is_never_downgraded(self):
-        self.write(version='1.11.0')
+        self.write(version='1.13.0')
         self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.11.0')
+        self.wait_health(lambda h: h['version'] == '1.13.0')
         self.write()
         self.start(name='older-client')
         code, report = self.cli_command('repair', '--json')
         self.assertEqual(code, 0)
         self.assertEqual(report['state'], 'current')
-        self.assertEqual(self.health()['version'], '1.11.0')
+        self.assertEqual(self.health()['version'], '1.13.0')
 
     def test_setup_handoffs_without_rewriting_existing_client_config(self):
         self.old_hub()
@@ -239,7 +245,50 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertEqual(result['runtime']['state'], 'restarted')
         self.assertEqual(config.read_bytes(), before)
-        self.assertEqual(self.health()['version'], '1.11.0')
+        self.assertEqual(self.health()['version'], '1.12.1')
+
+    def test_queue_deadline_does_not_execute_expired_call(self):
+        self.write(SOURCE.replace('queue:90000','queue:180').replace('tick:1000','tick:20'))
+        self.start('hub');self.wait_health(lambda h: h['version']=='1.12.1')
+        self.request('/page/poll',{'pageId':'fixture','hello':True},origin=ORIGIN)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            first=pool.submit(self.request,'/agent/call',{'name':'zhigao_status'},True)
+            self.wait_health(lambda h:h['queue']==1)
+            _,poll=self.request('/page/poll',{'pageId':'fixture'},origin=ORIGIN)
+            call_id=poll['calls'][0]['id']
+            self.request('/page/started',{'pageId':'fixture','id':call_id},origin=ORIGIN)
+            second=pool.submit(self.request,'/agent/call',{'name':'zhigao_status'},True)
+            self.assertEqual(second.result()[1]['code'],'CALL_QUEUE_TIMEOUT')
+            self.assertEqual(self.health()['queue'],0)
+            self.request('/page/result',{'pageId':'fixture','id':call_id,'result':{'ok':True}},origin=ORIGIN)
+            self.assertTrue(first.result()[1]['result']['ok'])
+            duplicate=self.request('/page/result',{'pageId':'fixture','id':call_id,'result':{'ok':True}},origin=ORIGIN)[1]
+            self.assertTrue(duplicate['accepted']);self.assertTrue(duplicate['duplicate'])
+
+    def test_execution_timeout_blocks_duplicate_and_accepts_late_completion(self):
+        self.write(SOURCE.replace('execution:180000','execution:180').replace('tick:1000','tick:20'))
+        self.start('hub');self.wait_health(lambda h:h['version']=='1.12.1')
+        self.request('/page/poll',{'pageId':'fixture','hello':True},origin=ORIGIN)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            first=pool.submit(self.request,'/agent/call',{'name':'zhigao_status'},True)
+            self.wait_health(lambda h:h['queue']==1)
+            _,poll=self.request('/page/poll',{'pageId':'fixture'},origin=ORIGIN)
+            call_id=poll['calls'][0]['id']
+            self.request('/page/started',{'pageId':'fixture','id':call_id},origin=ORIGIN)
+            error=first.result()[1];self.assertEqual(error['code'],'CALL_EXECUTION_TIMEOUT');self.assertTrue(error['details']['mayStillRun'])
+            self.assertEqual(self.request('/agent/call',{'name':'zhigao_status'},True)[1]['code'],'PAGE_BUSY')
+            late=self.request('/page/result',{'pageId':'fixture','id':call_id,'result':{'ok':True}},origin=ORIGIN)[1]
+            self.assertFalse(late['accepted']);self.assertIsNone(self.health()['active'])
+
+    def test_old_page_cannot_heartbeat_or_deliver_into_new_session(self):
+        self.write();self.start('hub');self.wait_health(lambda h:h['version']=='1.12.1')
+        self.request('/page/poll',{'pageId':'old','hello':True},origin=ORIGIN)
+        self.request('/page/disconnect',{'pageId':'old'},origin=ORIGIN)
+        self.request('/page/poll',{'pageId':'new','hello':True},origin=ORIGIN)
+        for endpoint,body in [('/page/heartbeat',{'pageId':'old'}),('/page/result',{'pageId':'old','id':'gone','result':{}})]:
+            status,error=self.request(endpoint,body,origin=ORIGIN);self.assertEqual(status,409);self.assertEqual(error['code'],'PAGE_SESSION_CHANGED')
+        status,error=self.request('/page/started',{'pageId':'new','id':'expired'},origin=ORIGIN)
+        self.assertEqual(error['code'],'CALL_EXPIRED');self.assertTrue(self.health()['page'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows legacy process identity check')
     def test_legacy_mcp_owner_is_never_force_stopped(self):
