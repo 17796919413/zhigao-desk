@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {createReviewService,batchSummary} from '../review-service.js';
-import {buildBasisManifest} from '../review-assurance.js';
+import {buildBasisManifest,digest} from '../review-assurance.js';
+import {fingerprint} from '../engine.js';
 import {contextSections,contextPage,unreadContext} from '../review-context.js';
 import {extractFacts,inspectFactConflicts,createKnowledgeCache,sourceUnits} from '../review-knowledge.js';
 
@@ -172,5 +173,16 @@ await test('批量读取跨租约截止仍验证当前版本，过大批次不�
 await test('多个非法ID与数组错误一次返回具体位置',async()=>{
  const f=fixture(),b=await f.service.zhigao_get_review_brief({docId:'d'}),r=await response(f,b);r.sourceChecks[0].id='missing-source';r.reviewedIds=['missing-block'];r.mediaChecks={};
  await assert.rejects(send(f,b,r),e=>e.code==='INVALID_CHECKS'&&e.details.diagnostics.length===3);
+});
+await test('待转换稿件保留原批次，只有字节校验通过的自动转换可以更新排队快照',async()=>{
+ for(const tamper of [false,true]){
+  const f=fixture();f.t.fmt='office-pending';f.t.cells=[];
+  const b=await f.service.zhigao_create_review_batch({docIds:['d']}),sourceSnapshot=fingerprint(f.t.cells);
+  const original=new TextEncoder().encode('synthetic original').buffer,converted=new TextEncoder().encode('synthetic converted').buffer;
+  f.t.fmt='text';f.t.cells=[{id:'p',current:'converted text',original:'converted text'}];f.t.buffer=converted;f.t.officeOriginal={buffer:original};
+  f.t.officeConversion={sourceSnapshot,convertedSnapshot:fingerprint(f.t.cells),sourceHash:await digest(original),convertedHash:await digest(converted)};
+  if(tamper)f.t.cells[0].current='actual user edit';
+  const current=await f.service.zhigao_get_review_batch({batchId:b.id});assert.equal(current.entries[0].status,tamper?'skipped':'queued');
+ }
 });
 console.log(JSON.stringify({total:results.length,checks:results},null,2));

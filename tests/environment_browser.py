@@ -61,7 +61,10 @@ home = OUT / '空白 用户目录'
 home.mkdir(exist_ok=True)
 connector = OUT / 'test-connector.mjs'
 source = (ROOT / 'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()', json.dumps(str(home)))
-source = source.replace('execution:180000', 'execution:1400').replace('progressGrace:60000', 'progressGrace:1000').replace('maxExecution:240000', 'maxExecution:3500').replace('total:270000', 'total:4500').replace('pageStale:120000', 'pageStale:1000').replace('tick:1000', 'tick:30')
+# Keep the base deadline below the three injected 600ms waits, while allowing
+# real throttled rendering to finish between progress events on a loaded host.
+# Production deadlines are unchanged; separate connector tests exercise stalls.
+source = source.replace('execution:180000', 'execution:1400').replace('progressGrace:60000', 'progressGrace:3000').replace('maxExecution:240000', 'maxExecution:6000').replace('total:270000', 'total:7000').replace('pageStale:120000', 'pageStale:1000').replace('tick:1000', 'tick:30')
 connector.write_text(source, encoding='utf-8')
 env = {**os.environ, 'ZHIGAO_PORT': str(port), 'ZHIGAO_AUTO_UPDATE': '0', 'ZHIGAO_REGISTER_URI': '0', 'ZHIGAO_ORIGINS': origin}
 log = (OUT / 'connector.log').open('w', encoding='utf-8')
@@ -106,6 +109,9 @@ try:
             assert not result.get('isError'), result
             return json.loads(result['content'][0]['text'])
 
+        def connected():
+            page.wait_for_function("async()=>['online','waiting'].includes((await import('/agent.js')).agent.state)", timeout=15000)
+
         assert call('zhigao_status')['connected']
         page.evaluate('''async()=>{
           const parsed=await(await import('/library-import.js')).parseLibraryFile(new File([await(await fetch('/__fixture/mixed.pdf')).arrayBuffer()],'mixed.pdf',{type:'application/pdf'}));
@@ -122,6 +128,7 @@ try:
             page.screenshot(path=str(OUT / 'reload-failure.png'),full_page=True)
             print('RELOAD_DIAGNOSTIC '+json.dumps({'errors':errors,'body':page.locator('body').inner_text()[:2500],'settings':page.evaluate("localStorage.getItem('zhigao-settings-v1')")},ensure_ascii=False),flush=True)
             raise
+        connected()
         brief = call('zhigao_get_review_brief', {'docId': 'draft'})
         args = {'docId': 'draft', 'reviewToken': brief['reviewToken']}
         assets = call('zhigao_read_review_context', {**args, 'section': 'assets'})['items']
@@ -152,6 +159,7 @@ try:
             page.screenshot(path=str(OUT / 'resume-failure.png'),full_page=True)
             print('RESUME_DIAGNOSTIC '+json.dumps({'errors':errors,'body':page.locator('body').inner_text()[:2500],'settings':page.evaluate("localStorage.getItem('zhigao-settings-v1')")},ensure_ascii=False),flush=True)
             raise
+        connected()
         fresh = call('zhigao_get_review_brief', {'docId': 'draft', 'retry': True})
         assert fresh['resume']['restored'] and fresh['resume']['readAssets'] == 3
         passed('mixed PDF receipts and context resume after actual browser reload')
@@ -170,8 +178,15 @@ try:
         page.get_by_role('heading',name='页面未能加载').wait_for()
         page.screenshot(path=str(OUT/'network-load-error.png'),full_page=True)
         page.unroute('**/video.js')
+        # Rendering the manuscript is independent of the new page's handshake.
+        # Hold that handshake to verify we really wait for connection readiness.
+        page.add_init_script("""(()=>{const fetch=window.fetch;window.fetch=async function(url,options){if(String(url).endsWith('/page/poll')&&!window.__connectionReleased){window.__connectionHeld=true;await new Promise(r=>window.__releaseConnection=()=>{window.__connectionReleased=true;r();});}return fetch.call(this,url,options);};})();""")
         page.get_by_role('button',name='刷新重试').click()
         page.wait_for_selector('.wb-row')
+        page.wait_for_function('window.__connectionHeld===true')
+        assert page.evaluate("async()=>['connecting','reconnecting'].includes((await import('/agent.js')).agent.state)")
+        page.evaluate('window.__releaseConnection()')
+        connected()
         restored=call('zhigao_get_review_brief',{'docId':'draft','retry':True})
         assert restored['resume']['restored'] and restored['resume']['readAssets']==3
         passed('blocked script shows actionable load error; retry restores manuscript and receipts')

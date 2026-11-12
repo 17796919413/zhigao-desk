@@ -22,9 +22,11 @@ OUT.mkdir(parents=True, exist_ok=True)
 BASELINE = os.environ.get('ZHIGAO_CONNECTION_BASELINE') == '1'
 BASELINE_COMMIT = '0dc2713ecf8b3cd863b197c0700fd0698373dfbc'  # Published 1.12.1; HEAD changes after a release.
 http.server.ThreadingHTTPServer.request_queue_size = 128
+http.server.ThreadingHTTPServer.daemon_threads = True
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
     def log_message(self, *args):
         pass
 
@@ -241,8 +243,9 @@ try:
             context = browser.new_context(viewport={'width': 1440, 'height': 1000})
             context.route('http://127.0.0.1:47821/**', lambda r: r.continue_(url=backend + r.request.url.split('47821', 1)[1]))
             page = context.new_page()
-            errors = []
+            errors = []; failed_requests=[]
             page.on('pageerror', lambda e: errors.append(str(e)))
+            page.on('requestfailed',lambda r:failed_requests.append({'url':r.url,'error':r.failure}))
             client.page = page
             try:
                 page.goto(origin)
@@ -255,9 +258,9 @@ try:
             except Exception as error:
                 page.screenshot(path=str(OUT / (case.__name__ + '-failure.png')), full_page=True)
                 result = {'name': case.__name__, 'passed': False, 'error': str(error), 'pageErrors': errors,
-                          'diagnostic': page.evaluate("({state:a.agent.state,held:!!window.held,releasePoll:typeof window.releasePoll,trace:window.pollTrace})")}
+                          'failedRequests':failed_requests,'diagnostic': page.evaluate("({state:window.a?.agent.state,held:!!window.held,releasePoll:typeof window.releasePoll,trace:window.pollTrace})")}
             finally:
-                page.evaluate('a.stopAgent()')
+                page.evaluate('window.a?.stopAgent()')
                 page.wait_for_timeout(200)
                 context.close()
             results.append(result)

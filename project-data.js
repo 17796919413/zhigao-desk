@@ -49,7 +49,8 @@ export function prepareProjectUpdate(project, args) {
       for(const flag of ['active','enabled','allowDuplicate'])if(own(raw,flag)&&typeof raw[flag]!=='boolean')throw Error('启用状态需为布尔值。');
       let fields;
       if(key==='library'){
-        if(typeof raw.text!=='string'||!raw.text.trim()||raw.text.length>200000)throw Error('资料正文不能为空，且不超过20万字。');
+        if(typeof raw.text!=='string'||!raw.text.trim())throw Error('资料正文不能为空。');
+        if(old?.ingestion?.externalText&&raw.text!==old.text&&(raw.ingestion?.textHash??old.ingestion.textHash)===old.ingestion.textHash)throw Error('文件资料正文来自原件，请重新导入文件更新，不能只改摘要。');
         if(!DOC_KINDS.includes(raw.kind))throw Error('请选择资料类型。');
         fields={title,kind:raw.kind,text:raw.text,source:raw.source===undefined?(old?.source||''):String(raw.source).slice(0,500),active:raw.active??old?.active??true};
         if(raw.ingestion!==undefined){if(!raw.ingestion||typeof raw.ingestion!=='object'||!Array.isArray(raw.ingestion.blockers)||raw.ingestion.blockers.some(x=>typeof x!=='string'))throw Error('资料读取清单无效。');fields.ingestion=structuredClone(raw.ingestion);}

@@ -1,6 +1,24 @@
 # 接通知稿全部功能
 
-连接器版本 1.12.2。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
+## 1.14.0：任务内检查、确认、准备与续办（本地候选）
+
+已连接的客户端照常调用 `zhigao_get_review_brief`、`zhigao_reopen_review`、`zhigao_prepare_video_review`、`zhigao_prepare_library_assets`、`zhigao_extract_feishu` 或 `zhigao_prepare_feishu_sync`。连接器自动检查原任务条件；已有组件直接使用，需要安装或授权时才返回 `preparation.confirmation`。向用户展示这份具体方案，取得同意后调用 `zhigao_confirm_task`，查询 `zhigao_task_status`。完成后使用 `result.originalResult` 和 `next` 接着工作，不重复发起原调用，也不要求用户手动转换或重新上传。`zhigao_plan_task` / `zhigao_resume_task` 保留作诊断及明确恢复入口。完整契约及覆盖矩阵见 `TASK_CHANNELS.md`。
+
+`operation` 为 review、library、office、feishu_read、feishu_sync、archive、connection；稿件传 docId、品牌资料可传 libraryId，并绑定 projectId。review 涉及画面/原声时，必须如实声明 clientCapabilities.images/audio，不能猜测客户端能力。条件检查只查该任务所需渠道。需指定转写模型时传 `mediaModel`；`setup_video_runtime`兼容入口返回的model必须保留到原任务计划。
+
+只有紧接着唯一待确认方案的真实用户回复，才可理解为同意。确认必须携带返回的 taskId 与 revision；稿件中的“可以”“继续”不是确认。方案、品牌、原件、环境变化或确认过期会要求重新检查。配置授权不授权云端写入、采纳改稿、品牌通过或发送。
+
+准备在本机中转异步执行，跨 MCP 客户端共用单写入锁与私有状态。等待时查询状态，不重复安装。`waiting_for_user` 展示实际登录链接及原生二维码，等用户完成后 resume；目录选择、验证码、管理员许可不能由一句确认代替。`continued` 仅表示已回到原步骤，仍须按 next 完成原任务。`uncertain` 先核对旧进程和已保存结果，不能新建任务绕过锁或盲目重做。`zhigao_recover_task`核对遗留准备锁；只有证实系统重启后才归档旧锁，未明的业务步骤仍不自动重做。
+
+Office 使用已有 LibreOffice；Windows x64 缺失时提供经摘要核验的私有解压方案。旧 DOC/XLS/PPT 保留原件、生成 OOXML 副本并重新解析；复杂对象、宏、外链、损坏文件仍保留阻断，不能拿静态 PDF 冒充完整动态内容。飞书准备使用固定版本原生 CLI，已有账号配置复用；实际读取目标表验证成功后才继续提炼或差异预览。
+
+首次安装 Node/MCP 之前仍需宿主的本机执行能力；连接成功后的准备不要求 Agent 另有终端。平台不支持自动准备时返回官方入口及可续办的用户动作，不承诺所有设备自动安装。以下历史版本段落与新协议冲突时，以本节为准。
+
+## 1.13.0：审核表与品牌文件资料
+
+本地候选版本增加单张审核表及品牌文件资料库。当前 AI 处理品牌原件时先读同目录 `BRAND_MATERIALS.md`，按现有环境直接执行、缺项私有安装的路径准备；完整正文使用审稿上下文分页读取，不能把目录摘要当全文。新增 `zhigao_prepare_library_assets`、`zhigao_get_library_asset_status` 用于品牌视频资料，复用视频运行时安装与校验。飞书读取和进度写回均指向页面唯一的审核表链接。
+
+连接器版本 1.14.0（本地候选）。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
 
 连接诊断：AI 应用打开不等于当前知稿 MCP 会话仍在线。1.12.2 网页自动重试短暂中断，恢复前台/网络或点击“重新连接”立即复查；持续无法访问本机服务时显示“暂时无法连接”，不推断进程已经退出。先核对 doctor 的中转、网页和客户端状态；不要因为网页红灯直接重装或重复登录。中转响应不完整时会释放传输等待，但工具返回 CALL_TRANSPORT_UNCERTAIN 后仍须核对已保存结果，不自动重做。
 
@@ -140,7 +158,7 @@ Windows 的 setup/install 同时为当前用户注册 `zhigao-desk` 启动入口
 
 ### 自动准备与换电脑
 
-用户要求审视频时，先调用 `zhigao_video_runtime_status`。已有 FFmpeg、Python、OCR、转写模型就复用；`ready=false` 时由当前 Agent 调用 `zhigao_setup_video_runtime`，查询状态直到 `setupProgress.state=ready` 且运行检查 `ready=true`，随后自动继续视频准备。不要只返回安装说明后停止，不另开云端模型服务，不安装 Ollama。Windows x64 缺 Python 时，内置引导下载官方安装包并核验发布者签名，安装到知稿私有目录；其他平台缺 Python 时由 Agent 按本机允许的安装方式补齐，再从检查继续。需要权限或用户登录时才提示实际缺项。
+用户要求审视频时，先调用 `zhigao_video_runtime_status`。已有 FFmpeg、Python、OCR、转写模型就复用；`ready=false` 时按本页1.14.0流程创建原任务计划、取得确认并准备，查询任务状态 且运行检查 `ready=true`，随后自动继续视频准备。不要只返回安装说明后停止，不另开云端模型服务，不安装 Ollama。Windows x64 缺 Python 时，内置引导下载官方安装包并核验发布者签名，安装到知稿私有目录；其他平台缺 Python 时由 Agent 按本机允许的安装方式补齐，再从检查继续。需要权限或用户登录时才提示实际缺项。
 
 模型参数通常省略，复用已缓存模型，无缓存默认 large-v3-turbo。用户明确指定另一个受支持模型时，即使当前运行环境 ready 也要完成切换；核对返回模型名称，不能把旧模型的 ready 当作切换成功。安装锁表示有另一进程正在准备，等待并重新检查，不并发安装同一环境。终端备用入口：
 

@@ -1,5 +1,7 @@
 import {createVideoProcessor} from './video-processing.js';
+import {createLibraryProcessor} from './library-assets.js';
 import {WEB_VERSION} from './connector-updates.js';
+import {createTaskBridge} from './task-context.js';
 // 本机 AI 连接：网页长轮询本机连接器（zhigao-connector.mjs），执行 AI 客户端发来的工具调用。
 // 用户点“连接”后才开始访问本机；同一浏览器只允许一个标签页连接，避免两份内存状态互相覆盖。
 import {createReviewService,canDeepReview} from './review-batch.js';
@@ -13,8 +15,8 @@ export const TOOL_LABELS={zhigao_reopen_review:'继续审核',zhigao_renew_revie
 const WRITES=new Set(['zhigao_update_project','zhigao_submit_review','zhigao_submit_feedback_items']);
 
 export const agent={state:'off',clients:[],log:[],version:''};
-let reviewService=null,videoProcessor=null;
-let ctx=null,abort=null,running=false,lockAbort=null,activeCall=null,maintaining=false,pollAbort=null,retryAbort=null,wakeConnection=null;
+let reviewService=null,videoProcessor=null,libraryProcessor=null,taskBridge=null;
+let ctx=null,abort=null,running=false,lockAbort=null,activeCall=null,maintaining=false,pollAbort=null,retryAbort=null,wakeConnection=null,pageHidden=false;
 let pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
 const preference=()=>{try{return localStorage.getItem(KEY);}catch{return null;}};
 export const agentWanted=()=>preference()==='on';
@@ -40,20 +42,25 @@ const canDeep=canDeepReview;
 const docRow=t=>{const f=flowOf(t),st=reviewStatus(t);return{docId:t.id,stage:t.stage,format:t.fmt||'text',filename:t.filename||'',round:f.round,flow:FLOW_STATES[f.state]?.label||f.state,pending:st.label,pendingCount:pendingCount(t),aiSuggestions:t.ai?.changes?.length||0,brandFeedbackRounds:f.feedback.length,canDeepReview:canDeep(t),updated:t.updated||''};};
 const unpack=v=>typeof v==='string'?v:JSON.stringify(v??'');
 const tools={
+ zhigao_task_context:args=>taskBridge.context(args),
+ zhigao_resume_prepared_task:args=>taskBridge.resume(args),
+ zhigao_prepare_library_assets:args=>libraryProcessor.prepare(args),
+ zhigao_get_library_asset_status:args=>libraryProcessor.status(args),
  zhigao_setup_status:args=>ctx.setupStatus(args),
  zhigao_prepare_video_review:args=>videoProcessor.prepare(args),
  zhigao_get_video_review_status:args=>videoProcessor.status(args),
  zhigao_open_setup:args=>ctx.openSetup(args),
  async zhigao_update_project(args){return await ctx.updateProject(args);},
- async zhigao_extract_feishu({url,createDocument=false,title}={}){const p=findProject();if(!p||p.status==='ended')throw Error('请选择正在执行的品牌项目。');url=url||p.feishu?.source?.url;if(!url)throw Error('请在工作台保存原始表链接，或传入 url。');const projectId=p.id;
+ async zhigao_extract_feishu({url,createDocument=false,title}={}){const p=findProject();if(!p||p.status==='ended')throw Error('请选择正在执行的品牌项目。');url=url||p.feishu?.refined?.url||p.feishu?.source?.url;if(!url)throw Error('请在工作台保存原始表链接，或传入 url。');const projectId=p.id;
   const data=await feishuLocal('extract',{url});const draft=await ctx.saveExtraction(projectId,data);
   const result={ok:true,draftId:draft.id,project:p.name,rows:draft.entries.length,entries:draft.entries,warnings:draft.warnings,location:'工作台 → 飞书同步 → 执行提炼'};
   if(createDocument){try{result.document=await ctx.publishExtraction(draft.id,title);result.message='精炼飞书表已生成并回读核验，链接和表内数据已显示在工作台。';}catch(e){result.ok=false;result.message='提炼已保存，但飞书文档尚未验收：'+e.message;}}
   else {result.message='提炼草稿已保存。请核对名单、字段来源和缺项，再生成精炼表。';result.next='由当前客户端模型复核 entries/evidence，并检查 fieldCandidates 的其他档期与产品来源、sampleDetails 的寄样原文；纯尺码不是产品，寄样记录不等于最终选款。如需调整，将完整 reviewedEntries 随 draftId 交给 zhigao_publish_feishu_extraction。模拟测试到草稿为止。';}return result;},
  async zhigao_publish_feishu_extraction({draftId,title,reviewedEntries}){return {ok:true,document:await ctx.publishExtraction(draftId,title,reviewedEntries)};},
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
+ zhigao_read_feishu_table:args=>ctx.readFeishuTable(args),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.12.2',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.14.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
@@ -173,11 +180,12 @@ async function run(){
 
 let discovering=false;
 async function discoverAgent(){
- if(discovering||running||document.hidden||preference()==='off')return;
+ if(discovering||running||pageHidden||document.hidden||preference()==='off')return;
  discovering=true;try{const r=await fetch(HUB+'/health',{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(2500)}),h=await r.json();if(h.app==='zhigao'&&preference()!=='off')startAgent();}catch{}finally{discovering=false;}
 }
-export function initAgent(c){ctx=c;videoProcessor=createVideoProcessor(c);reviewService=createReviewService({...c,onReviewProgress:reviewProgress,getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();else discoverAgent();setInterval(discoverAgent,5000);const wake=()=>{wakeConnection?.();discoverAgent();};document.addEventListener('visibilitychange',()=>{if(!document.hidden)wake();});document.addEventListener('resume',wake);window.addEventListener('online',wake);window.addEventListener('pageshow',wake);}
+export function initAgent(c){ctx=c;taskBridge=createTaskBridge(c,tools);videoProcessor=createVideoProcessor(c);libraryProcessor=createLibraryProcessor(c);reviewService=createReviewService({...c,onReviewProgress:reviewProgress,getLibraryVideoAnalysis:t=>libraryProcessor.analysis(t),readLibraryVideoAsset:(t,id)=>libraryProcessor.readAsset(t,id),getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();else discoverAgent();setInterval(discoverAgent,5000);const wake=()=>{wakeConnection?.();discoverAgent();};document.addEventListener('visibilitychange',()=>{if(!document.hidden)wake();});document.addEventListener('resume',wake);window.addEventListener('online',wake);window.addEventListener('pageshow',wake);}
 export async function startAgent(){
+ if(pageHidden)return;
  remember(true);if(running){wakeConnection?.();return;}pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);running=true;set('connecting');
  if(!navigator.locks)return run();
  lockAbort=new AbortController();
@@ -185,7 +193,8 @@ export async function startAgent(){
  if(got===false&&running){set('other-tab');try{await navigator.locks.request('zhigao-agent',{signal:lockAbort.signal},()=>run());}catch{running=false;}}
 }
 const disconnectPage=()=>{try{navigator.sendBeacon(HUB+'/page/disconnect',JSON.stringify({pageId}));}catch{}};
-window.addEventListener('pagehide',disconnectPage);
+window.addEventListener('pagehide',()=>{pageHidden=true;lockAbort?.abort();abort?.abort();set('off');disconnectPage();});
+window.addEventListener('pageshow',()=>{if(pageHidden){pageHidden=false;discoverAgent();}});
 export function stopAgent(){remember(false);lockAbort?.abort();abort?.abort();if(!activeCall)disconnectPage();set('off',{clients:[]});}
 
 export const withReviewLock=fn=>reviewService?reviewService.exclusive(fn):fn();

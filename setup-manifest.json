@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.12.2",
+  "version": "1.14.0",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
@@ -69,7 +69,9 @@
     "readAsset": "zhigao_read_review_asset",
     "readContext": "zhigao_read_review_context",
     "recordChecks": "zhigao_record_review_checks",
-    "readAssets": "zhigao_read_review_assets"
+    "readAssets": "zhigao_read_review_assets",
+    "prepareLibraryAssets": "zhigao_prepare_library_assets",
+    "libraryAssetStatus": "zhigao_get_library_asset_status"
   },
   "runtimeUpgrade": {
     "mode": "authenticated-idle-handoff",
@@ -125,7 +127,7 @@
   },
   "autoUpdate": {
     "protocol": 1,
-    "sha256": "f6f8fc94dd115d0e8b0f63bcb3c363aa7f62c9e2bcbc06f36975e1cd7f82cef1",
+    "sha256": "747f4814fe796e9c4dd200e270fadde497a1f4cd94859b7b18f91c11ef1b6750",
     "startup": true,
     "intervalHours": 6,
     "retryMinutes": 15,
@@ -134,15 +136,15 @@
   },
   "media": {
     "protocol": 1,
-    "version": "1.12.2",
+    "version": "1.14.0",
     "files": {
       "media-runtime.mjs": {
-        "sha256": "3f1be5cad6fb02a19d39cd0b00a2472caa5a6aeab3802b0efcc877d5aa6d6f55",
-        "bytes": 14921
+        "sha256": "78e1d5504bea6f2f69fe74f8f855f4d5655712efdd7bc63fcff537d2a0bc81c0",
+        "bytes": 15026
       },
       "media-worker.py": {
-        "sha256": "182e0fd15d16f0a305db1ec2faf629d045a3330941462be4ecff1d5c78ed34ba",
-        "bytes": 19105
+        "sha256": "11edfc0882f2bddbaa424fabe17ae4d85c445b03b88034551f502023afdb20d6",
+        "bytes": 19411
       }
     },
     "defaultModel": "large-v3-turbo",
@@ -150,7 +152,7 @@
     "semanticReview": "current-connected-agent"
   },
   "review": {
-    "protocolVersion": "1.12.2",
+    "protocolVersion": "1.14.0",
     "context": "Read each required brief.context section through nextCursor=null; reconstruct json-fragment records and block slices without truncation.",
     "checkpoint": "record_review_checks saves checks without completing review. Final explicit arrays replace saved arrays.",
     "basisChanges": "BASIS_CHANGED requires retry:true, updates pages and a fresh full review. Previous checks are advisory only.",
@@ -161,5 +163,37 @@
     "lease": "Active work renews automatically; explicit renew_review remains available. Idle work is not renewed indefinitely.",
     "compatibility": "New pages advertise tools and version. Unsupported tools fail before queueing. Old pages keep legacy single-asset support; inspect installed/running/page versions separately and reload client tool discovery when idle.",
     "resourceLimits": "PDF canvas allocation is rejected above 40 million pixels or 32767 per dimension; no silent downscaling. This is not a total process memory limit."
+  },
+  "brandMaterials": {
+    "guide": "./BRAND_MATERIALS.md",
+    "storage": "original files; authorized folder streamed with File System Access, otherwise IndexedDB Blob; complete extracted text in IndexedDB",
+    "limits": "No fixed upload-byte or text-character cap; actual disk, browser quota and parser resources apply.",
+    "video": "Reuse video_runtime_status/setup_video_runtime, then prepare_library_assets and get_library_asset_status until complete. Read all current-brand sources and assets before review completion.",
+    "unsupported": "Keep originals; block complete review until converted and verified. Never treat saved as parsed."
+  },
+  "taskPreparation": {
+    "protocol": 1,
+    "guide": "./TASK_CHANNELS.md",
+    "tools": [
+      "zhigao_plan_task",
+      "zhigao_confirm_task",
+      "zhigao_task_status",
+      "zhigao_resume_task",
+      "zhigao_cancel_task",
+      "zhigao_recover_task"
+    ],
+    "entry": "Existing read/review tools automatically check prerequisites. Poll preparation.taskId; after continuation consume result.originalResult instead of repeating the original call.",
+    "confirmation": "Exact task, revision, environment and current user reply; configuration never authorizes business writes.",
+    "modules": {
+      "task-runtime.mjs": {
+        "sha256": "7724419ba29e1a1f8f6368a5e6494ebf3f50325cf71444cc1f2f4e99648270da"
+      },
+      "channel-runtime.mjs": {
+        "sha256": "6ac45db1393a0fa09a8030b1cabd8fb273ab698e1d46fd975874c56a85174c7b"
+      },
+      "task-channels.mjs": {
+        "sha256": "7b8b78c04cf926f5c25b1caf46a1d70cbaf36c0565bf86aea1b11f95d42483bf"
+      }
+    }
   }
 }

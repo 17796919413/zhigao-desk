@@ -1,6 +1,7 @@
 """Isolated process/HTTP regression tests; no real credentials, browser data or Feishu writes."""
 import concurrent.futures
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -15,6 +16,9 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / 'zhigao-connector.mjs').read_text(encoding='utf-8')
+CURRENT_VERSION = re.search(r"const VERSION = '([^']+)'", SOURCE).group(1)
+_major, _minor, _patch = map(int, CURRENT_VERSION.split('.'))
+NEXT_VERSION = f'{_major}.{_minor+1}.0'
 NODE = shutil.which('node')
 ORIGIN = 'https://17796919413.github.io'
 
@@ -65,7 +69,8 @@ class RuntimeTests(unittest.TestCase):
 
     def write(self, source=SOURCE, version=None):
         if version:
-            source = source.replace("const VERSION = '1.12.2'", f"const VERSION = '{version}'")
+            source, count = re.subn(r"const VERSION = '[^']+'", f"const VERSION = '{version}'", source, count=1)
+            assert count == 1
         self.script.write_text(source.replace('os.homedir()', json.dumps(str(self.home))), encoding='utf-8')
 
     def start(self, *args, name=None, capture_initialize=False):
@@ -128,7 +133,7 @@ class RuntimeTests(unittest.TestCase):
     def test_idle_upgrade_and_feishu_status(self):
         old = self.old_hub()
         self.start(name='new-client')
-        h = self.wait_health(lambda h: h['version'] == '1.12.2')
+        h = self.wait_health(lambda h: h['version'] == CURRENT_VERSION)
         self.assertIn('new-client', h['clients'])
         old.wait(timeout=6)
         status, body = self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)
@@ -152,7 +157,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(poll['calls']), 1)
             self.request('/page/result', {'id': poll['calls'][0]['id'], 'result': {'preserved': True}}, origin=ORIGIN)
             self.assertEqual(call.result()[1], {'result': {'preserved': True}})
-        self.wait_health(lambda h: h['version'] == '1.12.2', timeout=9)
+        self.wait_health(lambda h: h['version'] == CURRENT_VERSION, timeout=9)
 
     def test_feishu_inflight_blocks_repair(self):
         self.env['FAKE_DELAY'] = '1800'
@@ -171,9 +176,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_handoff_auth_downgrade_and_uninstalled_version_rejected(self):
         self.old_hub()
-        status, _ = self.request('/agent/handoff', {'version': '1.12.2'}, True, secret='wrong-secret')
+        status, _ = self.request('/agent/handoff', {'version': CURRENT_VERSION}, True, secret='wrong-secret')
         self.assertEqual(status, 403)
-        status, _ = self.request('/agent/handoff', {'version': '1.12.2'}, True, ORIGIN)
+        status, _ = self.request('/agent/handoff', {'version': CURRENT_VERSION}, True, ORIGIN)
         self.assertEqual(status, 403)
         for version in ('1.7.0', '1.8.0', '9.0.0', 'invalid'):
             status, _ = self.request('/agent/handoff', {'version': version}, True)
@@ -184,7 +189,7 @@ class RuntimeTests(unittest.TestCase):
         self.old_hub()
         self.start(name='client-a')
         self.start(name='client-b')
-        h = self.wait_health(lambda h: h['version'] == '1.12.2' and {'client-a', 'client-b'} <= set(h['clients']))
+        h = self.wait_health(lambda h: h['version'] == CURRENT_VERSION and {'client-a', 'client-b'} <= set(h['clients']))
         self.assertIn(h['pid'], {p.pid for p in self.processes})
 
     def test_workbuddy_probe_lists_tools_without_claiming_hub(self):
@@ -204,12 +209,30 @@ class RuntimeTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'Windows legacy process identity check')
     def test_real_legacy_170_requires_explicit_scoped_restart(self):
+        self.legacy_restart()
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows legacy process identity check')
+    def test_slow_legacy_identity_probe_does_not_reuse_expired_health_socket(self):
+        self.legacy_restart(delay_ms=6200)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows legacy process identity check')
+    def test_changed_legacy_identity_still_blocks_restart(self):
+        self.legacy_restart(changed_identity=True)
+
+    def legacy_restart(self, delay_ms=0, changed_identity=False):
         legacy = legacy_source()
         self.write(legacy)
         old = self.start('hub')
         self.wait_health(lambda h: h['version'] == '1.7.0')
         self.assertEqual(self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)[0], 400)
-        self.write()
+        source = SOURCE
+        if delay_ms:
+            source = source.replace('const again=legacyListener(),current=await health();',
+                f'const again=legacyListener();Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,{delay_ms});const current=await health();')
+        if changed_identity:
+            source = source.replace('const again=legacyListener(),current=await health();',
+                "const again=legacyListener(),current=await health();if(again)again.created='different-process-creation-time';")
+        self.write(source)
         _, report = self.cli_command('doctor', '--json')
         self.assertEqual(report['connector']['runtimeState'], 'legacy_restart_required')
         for args in [('repair', '--json'), ('repair', '--restart-legacy', '--json')]:
@@ -219,21 +242,27 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(report['pid'], old.pid)
             self.assertIsNone(old.poll())
         code, report = self.cli_command('repair', '--restart-legacy', '--confirm-idle', '--json')
+        if changed_identity:
+            self.assertEqual(code, 1, report)
+            self.assertEqual(report['state'], 'listener_changed')
+            self.assertIsNone(old.poll())
+            self.assertEqual(self.health()['version'], '1.7.0')
+            return
         self.assertEqual(code, 0, report)
-        self.assertEqual(report['runningVersion'], '1.12.2')
+        self.assertEqual(report['runningVersion'], CURRENT_VERSION)
         old.wait(timeout=5)
         self.assertEqual(self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)[0], 200)
 
     def test_newer_runtime_is_never_downgraded(self):
-        self.write(version='1.13.0')
+        self.write(version=NEXT_VERSION)
         self.start('hub')
-        self.wait_health(lambda h: h['version'] == '1.13.0')
+        self.wait_health(lambda h: h['version'] == NEXT_VERSION)
         self.write()
         self.start(name='older-client')
         code, report = self.cli_command('repair', '--json')
         self.assertEqual(code, 0)
         self.assertEqual(report['state'], 'current')
-        self.assertEqual(self.health()['version'], '1.13.0')
+        self.assertEqual(self.health()['version'], NEXT_VERSION)
 
     def test_setup_handoffs_without_rewriting_existing_client_config(self):
         self.old_hub()
@@ -245,11 +274,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertEqual(result['runtime']['state'], 'restarted')
         self.assertEqual(config.read_bytes(), before)
-        self.assertEqual(self.health()['version'], '1.12.2')
+        self.assertEqual(self.health()['version'], CURRENT_VERSION)
 
     def test_queue_deadline_does_not_execute_expired_call(self):
         self.write(SOURCE.replace('queue:90000','queue:180').replace('tick:1000','tick:20'))
-        self.start('hub');self.wait_health(lambda h: h['version']=='1.12.2')
+        self.start('hub');self.wait_health(lambda h: h['version']==CURRENT_VERSION)
         self.request('/page/poll',{'pageId':'fixture','hello':True},origin=ORIGIN)
         with concurrent.futures.ThreadPoolExecutor() as pool:
             first=pool.submit(self.request,'/agent/call',{'name':'zhigao_status'},True)
@@ -267,7 +296,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_execution_timeout_blocks_duplicate_and_accepts_late_completion(self):
         self.write(SOURCE.replace('execution:180000','execution:180').replace('tick:1000','tick:20'))
-        self.start('hub');self.wait_health(lambda h:h['version']=='1.12.2')
+        self.start('hub');self.wait_health(lambda h:h['version']==CURRENT_VERSION)
         self.request('/page/poll',{'pageId':'fixture','hello':True},origin=ORIGIN)
         with concurrent.futures.ThreadPoolExecutor() as pool:
             first=pool.submit(self.request,'/agent/call',{'name':'zhigao_status'},True)
@@ -281,7 +310,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(late['accepted']);self.assertIsNone(self.health()['active'])
 
     def test_old_page_cannot_heartbeat_or_deliver_into_new_session(self):
-        self.write();self.start('hub');self.wait_health(lambda h:h['version']=='1.12.2')
+        self.write();self.start('hub');self.wait_health(lambda h:h['version']==CURRENT_VERSION)
         self.request('/page/poll',{'pageId':'old','hello':True},origin=ORIGIN)
         self.request('/page/disconnect',{'pageId':'old'},origin=ORIGIN)
         self.request('/page/poll',{'pageId':'new','hello':True},origin=ORIGIN)
@@ -289,6 +318,14 @@ class RuntimeTests(unittest.TestCase):
             status,error=self.request(endpoint,body,origin=ORIGIN);self.assertEqual(status,409);self.assertEqual(error['code'],'PAGE_SESSION_CHANGED')
         status,error=self.request('/page/started',{'pageId':'new','id':'expired'},origin=ORIGIN)
         self.assertEqual(error['code'],'CALL_EXPIRED');self.assertTrue(self.health()['page'])
+
+    def test_disconnected_page_cannot_register_a_late_first_poll(self):
+        self.write();self.start('hub');self.wait_health(lambda h:h['version']==CURRENT_VERSION)
+        self.request('/page/disconnect',{'pageId':'left-before-handshake'},origin=ORIGIN)
+        status,error=self.request('/page/poll',{'pageId':'left-before-handshake','hello':True},origin=ORIGIN)
+        self.assertEqual(status,409);self.assertEqual(error['code'],'PAGE_SESSION_CHANGED')
+        status,_=self.request('/page/poll',{'pageId':'current','hello':True},origin=ORIGIN)
+        self.assertEqual(status,200);self.assertTrue(self.health()['page'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows legacy process identity check')
     def test_legacy_mcp_owner_is_never_force_stopped(self):

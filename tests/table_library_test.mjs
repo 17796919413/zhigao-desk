@@ -1,0 +1,19 @@
+import assert from 'node:assert/strict';
+import {migrateReviewTable,tableModel,tableBody} from '../review-table.js';
+import {autoMap,rowKey} from '../feishu.js';
+import {hydrateLibraryProject} from '../library-assets.js';
+import {digest} from '../review-knowledge.js';
+import {prepareProjectUpdate} from '../project-data.js';
+import {planFeishuRemoval} from '../feishu-removal.js';
+const checks=[];async function test(name,fn){await fn();checks.push(name);console.log('PASS '+name);}
+const url='https://example.feishu.cn/sheets/one',old='https://example.feishu.cn/sheets/old';
+await test('单表迁移保留旧双链接，不修改输入；重复迁移无变化',()=>{const s={projects:[{id:'p',feishu:{source:{url:old},refined:{url},sheets:[]}}]},m=migrateReviewTable(s);assert.equal(m.settings.projects[0].feishu.refined.url,url);assert.equal(m.settings.projects[0].feishu.legacyLinks.source.url,old);assert.equal(s.projects[0].feishu.source.url,old);assert.equal(migrateReviewTable(m.settings).changed,false);});
+await test('仅原始链接的旧项目迁移；移除后不会复活隐藏链接',()=>{const m=migrateReviewTable({projects:[{id:'p',feishu:{source:{url},sheets:[]}}]}),p=m.settings.projects[0];assert.equal(p.feishu.refined.url,url);const plan=planFeishuRemoval(p,[],[],{kind:'refined'});assert.equal(migrateReviewTable({projects:[plan.project]}).settings.projects[0].feishu.refined,null);});
+const headers=['达人','发布平台','合作产品','大纲'],sheet={id:'s',live:true,remoteId:'remote',sourceUrl:url,headers,map:autoMap(headers),rows:Array.from({length:302},(_,i)=>['达人'+i,'小红书',i===1?0:'产品','',''])},p={id:'p',feishu:{refined:{url},sheets:[sheet]}};
+await test('302行全量可分页；超出页码安全归位；零值保留；HTML转义',()=>{let m=tableModel(p,[],()=>[],{page:6});assert.equal(m.rows.length,2);assert.equal(m.rows.at(-1).index,301);assert.equal(tableModel(p,[],()=>[],{page:999}).page,6);sheet.rows[1][2]='<script>bad()</script>';assert.ok(tableBody(tableModel(p,[],()=>[])).includes('&lt;script&gt;'));assert.equal(tableModel(p,[],()=>[],{query:'达人301'}).count,1);});
+await test('只显示当前链接；旧快照和过期子表隔离',()=>{assert.equal(tableModel({...p,feishu:{...p.feishu,refined:{url:old}}},[],()=>[]).sheet,null);sheet.stale=true;assert.equal(tableModel(p,[],()=>[]).sheet,null);delete sheet.stale;});
+await test('AI差异按唯一行绑定；非空外部值保留为冲突',()=>{const it={id:'i',projectId:'p',author:'达人0',platform:'小红书',title:'产品',kind:'图文',feishu:{sheetId:'s',key:rowKey(sheet,0)}},docs=()=>[{stage:'大纲',updated:'today',ai:{changes:[]},flow:{state:'review'}}];let m=tableModel(p,[it],docs,{filter:'pending'});assert.equal(m.count,1);assert.equal(m.rows[0].updates,1);sheet.rows[0][3]='品牌原有要求';m=tableModel(p,[it],docs,{filter:'conflict'});assert.equal(m.count,1);assert.ok(tableBody(m).includes('品牌原有要求'));});
+await test('文件完整正文还原并校验；缺件和篡改失败；停用材料不读取',async()=>{const text='完整文字。'.repeat(50000),project={id:'p',library:[{id:'l',text:'摘要',ingestion:{externalText:true,assetKey:'file',textHash:await digest(text)}}]};assert.equal((await hydrateLibraryProject(project,async()=>({extractedText:text}))).library[0].text,text);await assert.rejects(hydrateLibraryProject(project,async()=>null),/缺失/);await assert.rejects(hydrateLibraryProject(project,async()=>({extractedText:'其他'})),/不一致/);project.library[0].active=false;await hydrateLibraryProject(project,()=>{throw Error('不应读取');});});
+await test('品牌资料正文不再人为限制20万字',()=>{const result=prepareProjectUpdate({id:'p',library:[],rules:[]},{library:[{title:'长资料',kind:'其他',text:'字'.repeat(210000)}]});assert.equal(result.project.library[0].text.length,210000);});
+await test('文件摘要不能被当作完整原文修改；重导新版本允许更新',()=>{const d={id:'l',title:'文件',kind:'其他',text:'旧摘要',ingestion:{externalText:true,textHash:'old',blockers:[]}},p={id:'p',library:[d],rules:[]};assert.throws(()=>prepareProjectUpdate(p,{library:[{id:'l',title:'文件',kind:'其他',text:'新摘要'}]}),/原件/);assert.equal(prepareProjectUpdate(p,{library:[{...d,text:'新摘要',ingestion:{...d.ingestion,textHash:'new'}}]}).project.library[0].text,'新摘要');});
+console.log(JSON.stringify({total:checks.length,checks},null,2));

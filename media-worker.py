@@ -18,7 +18,15 @@ def put(path,data):
  path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
  try:
   with tmp.open('w',encoding='utf-8') as f:json.dump(data,f,ensure_ascii=False,allow_nan=False);f.flush();os.fsync(f.fileno())
-  os.replace(tmp,path)
+  # Windows may temporarily deny replacement while a reader or scanner has the
+  # progress file open. Retry this atomic replace only; never repeat processing.
+  for attempt in range(7):
+   try:
+    os.replace(tmp,path)
+    break
+   except PermissionError:
+    if os.name!='nt' or attempt==6:raise
+    time.sleep(.02*2**attempt)
  finally:
   if tmp.exists():tmp.unlink()
 def read_json(path):

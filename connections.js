@@ -46,11 +46,11 @@ export function createConnections(ctx) {
   }
   function feishuGuide() {
     const needsInstall = ['unknown', 'missing', 'config'].includes(feishu.state);
-    return `<p>在电脑的 PowerShell 或终端中完成设置。</p>
+    return `<p>可让已连接的 AI 按当前任务准备渠道；确认后自动检查、准备并续办。</p><details><summary>手动设置方式</summary><p>在电脑的 PowerShell 或终端中完成设置。</p>
       <details class="connect-more" ${needsInstall ? 'open' : ''}><summary>首次使用：安装与配置</summary><ol class="connect-steps"><li>安装飞书 CLI（需先安装 Node.js）。${command('install', FEISHU_COMMANDS.install)}</li><li>配置飞书应用，按终端提示完成；已有应用可直接绑定。${command('config', FEISHU_COMMANDS.config)}</li></ol><p>如果公司限制创建应用，请联系飞书管理员协助配置。</p></details>
       <ol class="connect-steps"><li>运行授权命令，在打开的飞书页面登录并确认。${command('login', FEISHU_COMMANDS.login)}</li><li>终端提示登录成功后，回到这里点击“检查连接”。</li></ol>
       <details class="connect-more"><summary>已登录，仍不能同步</summary><p>提示缺少权限：重新运行授权命令；若应用权限未开通，请管理员在飞书应用后台开通。表格打不开：请所有者给当前账号查看或编辑权限。知稿支持飞书电子表格及其知识库链接。</p><p>更换电脑或登录过期时，重新完成登录即可。</p></details>
-      <p class="connect-note">暂不接入也可在飞书同步页粘贴表格，后续再连接。</p>`;
+      <p class="connect-note">暂不接入也可在飞书同步页粘贴表格，后续再连接。</p></details>`;
   }
   function row(key, title, label, description, action, guide) {
     const open = expanded === key;
@@ -129,6 +129,7 @@ export function createConnections(ctx) {
     if (action === 'connect-open') open(b.dataset.section || '');
     if (action === 'connect-expand') { expanded = expanded === b.dataset.section ? '' : b.dataset.section; refresh(); }
     if (action === 'connect-check') await check();
+    if (action === 'connect-task-feishu') await ctx.prepareTask({operation:'feishu_read',projectId:ctx.project().id});
     if(action==='connect-update-check')await checkVersion();
     if(action==='connect-update-apply'){
       if(updateBusy)return true;updateBusy=true;update={...update,state:'downloading'};refresh();

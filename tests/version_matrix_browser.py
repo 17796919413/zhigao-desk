@@ -93,7 +93,7 @@ def run(old_page, old_hub):
             page.screenshot(path=str(target / 'connected.png'))
             with urllib.request.urlopen(backend + '/health', timeout=1) as r:
                 hub_health = json.load(r)
-            assert hub_health['version'] == (old_version if old_hub else '1.12.2')
+            assert hub_health['version'] == (old_version if old_hub else json.loads((ROOT/'setup-manifest.json').read_text(encoding='utf-8'))['version'])
             assert not errors, errors
             result = {'case': name, 'passed': True, 'pageProtocol': status.get('protocolVersion'), 'runningVersion': hub_health['version'], 'pageErrors': errors}
             results.append(result)

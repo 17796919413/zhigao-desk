@@ -13,7 +13,7 @@ export function createVideoProcessor(ctx){
   }else if(result.state!==t.videoPreparation.state||result.stage!==t.videoPreparation.progress?.stage)await save(t,{videoPreparation:{...t.videoPreparation,state:result.state,progress:result}});
   return {...result,semanticReview:'pending-agent-review',next:result.state==='complete'?'原件准备完整；现在获取审稿指令，审核全部转写、OCR、画面与必听原声，提交逐项结果。':['failed','interrupted'].includes(result.state)?'处理失败，不能算已审；修复错误后调用 prepare_video_review({retry:true})。':'处理仍在进行，继续查询状态；不要先提交审核完成。'};
  }
- async function prepare({docId,retry=false}){let t=selected(docId);const health=await request({action:'doctor'});if(!health.ready)return {state:'setup_required',runtime:health,next:'调用 zhigao_video_runtime_status，按返回的 setup 命令由当前Agent准备依赖，再重试。'};
+ async function prepare({docId,retry=false}){let t=selected(docId);const health=await request({action:'doctor'});if(!health.ready)return {state:'setup_required',runtime:health,next:'调用 zhigao_plan_task 绑定原视频任务；展示准备方案并取得用户同意后 confirm_task，按任务状态续办。'};
   if(!t.mediaRevision){t={...t,mediaRevision:crypto.randomUUID()};await ctx.save(t);}
   if(pending.has(t.id))return {state:'processing',next:'查询 zhigao_get_video_review_status。'};
   if(t.videoPreparation?.job){const current=await status(t);if(current.state==='complete')return current;if(['failed','interrupted'].includes(current.state)){if(!retry)return current;await request({action:'retry',...binding(t)});return {state:'queued'};}if(current.state!=='uploading')return current;}
