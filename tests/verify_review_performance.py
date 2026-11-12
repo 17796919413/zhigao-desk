@@ -5,6 +5,7 @@ ROOT=Path(__file__).resolve().parents[1]
 OUT=Path(os.environ.get('ZHIGAO_VERIFY_OUT',str(ROOT.parent/'_verify'/'workbuddy-performance-20261112')))
 OUT.mkdir(parents=True,exist_ok=True)
 commands={
+ 'connector-connection':[sys.executable,'-X','utf8','-m','unittest','discover','-s','tests','-p','connector_connection_test.py'],
  'connector-environment':[sys.executable,'-X','utf8','-m','unittest','discover','-s','tests','-p','connector_environment_test.py'],
  'context':['node','tests/review_context_test.mjs'],
  'assurance':['node','tests/review_assurance_test.mjs'],
@@ -24,7 +25,7 @@ def run(name,command,subdir=None):
 results=[]
 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
  for future in concurrent.futures.as_completed([pool.submit(run,k,v) for k,v in commands.items()]):results.append(future.result())
-for name,script,subdir in [('feedback-browser','workbench_feedback_browser.py','feedback'),('extra-browser','workbench_extra_browser.py','extra'),('performance-browser','review_performance_browser.py',None),('pdf-cache-browser','pdf_cache_browser.py',None),('environment-browser','environment_browser.py',None)]:
+for name,script,subdir in [('agent-connection-browser','agent_connection_browser.py',None),('feedback-browser','workbench_feedback_browser.py','feedback'),('extra-browser','workbench_extra_browser.py','extra'),('performance-browser','review_performance_browser.py',None),('pdf-cache-browser','pdf_cache_browser.py',None),('environment-browser','environment_browser.py',None)]:
  results.append(run(name,[sys.executable,'-X','utf8','tests/'+script],subdir))
 summary={'checks':results,'passed':all(x['exitCode']==0 for x in results)}
 (OUT/'suite.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')

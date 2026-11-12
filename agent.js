@@ -14,7 +14,7 @@ const WRITES=new Set(['zhigao_update_project','zhigao_submit_review','zhigao_sub
 
 export const agent={state:'off',clients:[],log:[],version:''};
 let reviewService=null,videoProcessor=null;
-let ctx=null,abort=null,running=false,lockAbort=null,activeCall=null,maintaining=false,pollAbort=null,wakeConnection=null;
+let ctx=null,abort=null,running=false,lockAbort=null,activeCall=null,maintaining=false,pollAbort=null,retryAbort=null,wakeConnection=null;
 let pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
 const preference=()=>{try{return localStorage.getItem(KEY);}catch{return null;}};
 export const agentWanted=()=>preference()==='on';
@@ -53,7 +53,7 @@ const tools={
  async zhigao_publish_feishu_extraction({draftId,title,reviewedEntries}){return {ok:true,document:await ctx.publishExtraction(draftId,title,reviewedEntries)};},
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.12.1',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.12.2',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
@@ -112,29 +112,63 @@ function reviewProgress(stage){
  (async()=>{try{while(activeCall===call){const progress=call.progress;await post('/page/progress',{pageId,id:call.id,progress},AbortSignal.timeout(5000));if(progress===call.progress)break;}}catch{}finally{call.reporting=false;}})();
 }
 
-async function loop(signal){
+async function loop(signal,connection){
  let hello=true,wait=3000;
  while(!signal.aborted){
-  try{pollAbort=new AbortController();const controller=pollAbort,onAbort=()=>controller.abort();signal.addEventListener('abort',onAbort,{once:true});const timer=setTimeout(onAbort,35000);let r;
+  const request=++connection.sequence,id=pageId;let controller;
+  try{pollAbort=new AbortController();controller=pollAbort;const onAbort=()=>controller.abort();signal.addEventListener('abort',onAbort,{once:true});const timer=setTimeout(onAbort,35000);let r;
    try{r=await post('/page/poll',{pageId,title:document.title,hello,version:WEB_VERSION,tools:Object.keys(tools)},controller.signal);}finally{clearTimeout(timer);signal.removeEventListener('abort',onAbort);if(pollAbort===controller)pollAbort=null;}
+   if(signal.aborted)break;
    hello=false;wait=3000;
-   set(r.clients?.length?'online':'waiting',{clients:r.clients||[],version:r.version||agent.version});
-   for(const c of r.calls||[])await handle(c);}
-  catch(e){if(signal.aborted)break;hello=true;if(e.code==='PAGE_SESSION_CHANGED'){set('other-tab',{clients:[]});break;}set(e.code==='PAGE_IN_USE'?'other-tab':'offline',{clients:[]});await sleep(wait,signal);wait=Math.min(wait*2,15000);}
+   connection.success(r,id,request);
+   for(const c of r.calls||[]){if(signal.aborted)break;await handle(c);}}
+  catch(e){
+   if(signal.aborted)break;hello=true;
+   // Waking/retrying deliberately cancels a long poll. It is not a network failure.
+   if(controller?.signal.reason==='wake')continue;
+   if(['PAGE_SESSION_CHANGED','PAGE_IN_USE'].includes(e.code)&&request<connection.settled)continue;
+   if(e.code==='PAGE_SESSION_CHANGED'){
+    pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
+    set('reconnecting',{clients:[]});continue;
+   }
+   if(e.code==='PAGE_IN_USE'){connection.settled=Math.max(connection.settled,request);set('other-tab',{clients:[]});}else connection.failure(e,request,id);
+   retryAbort=new AbortController();const retry=retryAbort,onAbort=()=>retry.abort();signal.addEventListener('abort',onAbort,{once:true});
+   try{await sleep(wait,retry.signal);}finally{signal.removeEventListener('abort',onAbort);if(retryAbort===retry)retryAbort=null;}
+   wait=Math.min(wait*2,15000);
+  }
  }
 }
 async function run(){
  abort=new AbortController();const signal=abort.signal;let beating=false;
  set('connecting');
+ const connection={sequence:0,settled:0,failedAt:null,
+  success(r,id,request){
+   if(signal.aborted||id!==pageId||request<this.settled)return;
+   this.settled=request;this.failedAt=null;
+   set(r.clients?.length?'online':'waiting',{clients:r.clients||[],version:r.version||agent.version,error:null});
+  },
+  failure(error,request,id){
+   // Neither late failures nor late successes may overwrite a newer response.
+   if(signal.aborted||id!==pageId||request<this.settled)return;
+   this.settled=request;
+   this.failedAt??=performance.now();
+   set(performance.now()-this.failedAt<20000?'reconnecting':'offline',{clients:[],error:{code:error.code||error.name||'NETWORK_ERROR',status:error.status||null}});
+  }
+ };
  const beat=async()=>{
   if(beating||signal.aborted)return;beating=true;
-  try{const r=await post('/page/heartbeat',{pageId,activeCall},AbortSignal.timeout(8000));if(!signal.aborted)set(r.clients?.length?'online':'waiting',{clients:r.clients||[]});}
-  catch(error){if(error.status===404)clearInterval(heartbeat);else if(!signal.aborted&&error.code!=='PAGE_SESSION_CHANGED')set('offline',{clients:[]});}finally{beating=false;}
+  const request=++connection.sequence,id=pageId;
+  try{const r=await post('/page/heartbeat',{pageId:id,activeCall},AbortSignal.timeout(8000));connection.success(r,id,request);}
+  catch(error){
+   if(error.status===404)clearInterval(heartbeat);
+   else if(error.code==='PAGE_SESSION_CHANGED'){if(!signal.aborted&&!activeCall&&id===pageId)retryAbort?.abort();}
+   else connection.failure(error,request,id);
+  }finally{beating=false;}
  };
  const heartbeat=setInterval(beat,10000);
- const wake=()=>{if(signal.aborted)return;beat();if(!activeCall)pollAbort?.abort();};wakeConnection=wake;
+ const wake=()=>{if(signal.aborted)return;beat();retryAbort?.abort();if(!activeCall)pollAbort?.abort('wake');};wakeConnection=wake;
  const maintenance=setInterval(async()=>{if(maintaining||signal.aborted||agent.state!=='online')return;maintaining=true;try{await reviewService.maintainLeases();}catch(error){agent.log.unshift({at:new Date().toISOString(),label:'自动续租失败',ok:false,error:error.message});}finally{maintaining=false;}},60000);
- try{await reviewService.recover();await loop(signal);}finally{clearInterval(heartbeat);clearInterval(maintenance);if(wakeConnection===wake)wakeConnection=null;running=false;if(signal.aborted){disconnectPage();if(agentWanted())queueMicrotask(startAgent);}}
+ try{await reviewService.recover();await loop(signal,connection);}finally{clearInterval(heartbeat);clearInterval(maintenance);if(wakeConnection===wake)wakeConnection=null;running=false;if(signal.aborted){disconnectPage();if(agentWanted())queueMicrotask(startAgent);}}
 }
 
 let discovering=false;
@@ -142,9 +176,9 @@ async function discoverAgent(){
  if(discovering||running||document.hidden||preference()==='off')return;
  discovering=true;try{const r=await fetch(HUB+'/health',{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(2500)}),h=await r.json();if(h.app==='zhigao'&&preference()!=='off')startAgent();}catch{}finally{discovering=false;}
 }
-export function initAgent(c){ctx=c;videoProcessor=createVideoProcessor(c);reviewService=createReviewService({...c,onReviewProgress:reviewProgress,getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();else discoverAgent();setInterval(discoverAgent,5000);const wake=()=>{wakeConnection?.();discoverAgent();};document.addEventListener('visibilitychange',()=>{if(!document.hidden)wake();});window.addEventListener('online',wake);window.addEventListener('pageshow',wake);}
+export function initAgent(c){ctx=c;videoProcessor=createVideoProcessor(c);reviewService=createReviewService({...c,onReviewProgress:reviewProgress,getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();else discoverAgent();setInterval(discoverAgent,5000);const wake=()=>{wakeConnection?.();discoverAgent();};document.addEventListener('visibilitychange',()=>{if(!document.hidden)wake();});document.addEventListener('resume',wake);window.addEventListener('online',wake);window.addEventListener('pageshow',wake);}
 export async function startAgent(){
- remember(true);if(running)return;pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);running=true;set('connecting');
+ remember(true);if(running){wakeConnection?.();return;}pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);running=true;set('connecting');
  if(!navigator.locks)return run();
  lockAbort=new AbortController();
  const got=await navigator.locks.request('zhigao-agent',{ifAvailable:true},async l=>{if(!l)return false;await run();return true;});

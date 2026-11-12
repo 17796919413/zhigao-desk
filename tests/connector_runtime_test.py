@@ -65,7 +65,7 @@ class RuntimeTests(unittest.TestCase):
 
     def write(self, source=SOURCE, version=None):
         if version:
-            source = source.replace("const VERSION = '1.12.1'", f"const VERSION = '{version}'")
+            source = source.replace("const VERSION = '1.12.2'", f"const VERSION = '{version}'")
         self.script.write_text(source.replace('os.homedir()', json.dumps(str(self.home))), encoding='utf-8')
 
     def start(self, *args, name=None, capture_initialize=False):
@@ -128,7 +128,7 @@ class RuntimeTests(unittest.TestCase):
     def test_idle_upgrade_and_feishu_status(self):
         old = self.old_hub()
         self.start(name='new-client')
-        h = self.wait_health(lambda h: h['version'] == '1.12.1')
+        h = self.wait_health(lambda h: h['version'] == '1.12.2')
         self.assertIn('new-client', h['clients'])
         old.wait(timeout=6)
         status, body = self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)
@@ -152,7 +152,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(poll['calls']), 1)
             self.request('/page/result', {'id': poll['calls'][0]['id'], 'result': {'preserved': True}}, origin=ORIGIN)
             self.assertEqual(call.result()[1], {'result': {'preserved': True}})
-        self.wait_health(lambda h: h['version'] == '1.12.1', timeout=9)
+        self.wait_health(lambda h: h['version'] == '1.12.2', timeout=9)
 
     def test_feishu_inflight_blocks_repair(self):
         self.env['FAKE_DELAY'] = '1800'
@@ -171,9 +171,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_handoff_auth_downgrade_and_uninstalled_version_rejected(self):
         self.old_hub()
-        status, _ = self.request('/agent/handoff', {'version': '1.12.1'}, True, secret='wrong-secret')
+        status, _ = self.request('/agent/handoff', {'version': '1.12.2'}, True, secret='wrong-secret')
         self.assertEqual(status, 403)
-        status, _ = self.request('/agent/handoff', {'version': '1.12.1'}, True, ORIGIN)
+        status, _ = self.request('/agent/handoff', {'version': '1.12.2'}, True, ORIGIN)
         self.assertEqual(status, 403)
         for version in ('1.7.0', '1.8.0', '9.0.0', 'invalid'):
             status, _ = self.request('/agent/handoff', {'version': version}, True)
@@ -184,7 +184,7 @@ class RuntimeTests(unittest.TestCase):
         self.old_hub()
         self.start(name='client-a')
         self.start(name='client-b')
-        h = self.wait_health(lambda h: h['version'] == '1.12.1' and {'client-a', 'client-b'} <= set(h['clients']))
+        h = self.wait_health(lambda h: h['version'] == '1.12.2' and {'client-a', 'client-b'} <= set(h['clients']))
         self.assertIn(h['pid'], {p.pid for p in self.processes})
 
     def test_workbuddy_probe_lists_tools_without_claiming_hub(self):
@@ -220,7 +220,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertIsNone(old.poll())
         code, report = self.cli_command('repair', '--restart-legacy', '--confirm-idle', '--json')
         self.assertEqual(code, 0, report)
-        self.assertEqual(report['runningVersion'], '1.12.1')
+        self.assertEqual(report['runningVersion'], '1.12.2')
         old.wait(timeout=5)
         self.assertEqual(self.request('/page/feishu', {'action': 'status'}, origin=ORIGIN)[0], 200)
 
@@ -245,11 +245,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertEqual(result['runtime']['state'], 'restarted')
         self.assertEqual(config.read_bytes(), before)
-        self.assertEqual(self.health()['version'], '1.12.1')
+        self.assertEqual(self.health()['version'], '1.12.2')
 
     def test_queue_deadline_does_not_execute_expired_call(self):
         self.write(SOURCE.replace('queue:90000','queue:180').replace('tick:1000','tick:20'))
-        self.start('hub');self.wait_health(lambda h: h['version']=='1.12.1')
+        self.start('hub');self.wait_health(lambda h: h['version']=='1.12.2')
         self.request('/page/poll',{'pageId':'fixture','hello':True},origin=ORIGIN)
         with concurrent.futures.ThreadPoolExecutor() as pool:
             first=pool.submit(self.request,'/agent/call',{'name':'zhigao_status'},True)
@@ -267,7 +267,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_execution_timeout_blocks_duplicate_and_accepts_late_completion(self):
         self.write(SOURCE.replace('execution:180000','execution:180').replace('tick:1000','tick:20'))
-        self.start('hub');self.wait_health(lambda h:h['version']=='1.12.1')
+        self.start('hub');self.wait_health(lambda h:h['version']=='1.12.2')
         self.request('/page/poll',{'pageId':'fixture','hello':True},origin=ORIGIN)
         with concurrent.futures.ThreadPoolExecutor() as pool:
             first=pool.submit(self.request,'/agent/call',{'name':'zhigao_status'},True)
@@ -281,7 +281,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(late['accepted']);self.assertIsNone(self.health()['active'])
 
     def test_old_page_cannot_heartbeat_or_deliver_into_new_session(self):
-        self.write();self.start('hub');self.wait_health(lambda h:h['version']=='1.12.1')
+        self.write();self.start('hub');self.wait_health(lambda h:h['version']=='1.12.2')
         self.request('/page/poll',{'pageId':'old','hello':True},origin=ORIGIN)
         self.request('/page/disconnect',{'pageId':'old'},origin=ORIGIN)
         self.request('/page/poll',{'pageId':'new','hello':True},origin=ORIGIN)
