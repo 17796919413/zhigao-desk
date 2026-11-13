@@ -8,6 +8,7 @@ OUT = Path(os.environ['ZHIGAO_VERIFY_OUT']) / 'resilience'
 OUT.mkdir(parents=True, exist_ok=True)
 http.server.ThreadingHTTPServer.request_queue_size = 128
 class Handler(http.server.SimpleHTTPRequestHandler):
+    protocol_version='HTTP/1.1'
     def log_message(self, *args): pass
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(ROOT)))
 threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -179,9 +180,29 @@ try:
     reply(request,status=500)
     refresh=wait_read();assert json.loads(refresh.request.post_data)['action']=='readAll'
     reply(refresh,'中断后回读')
-    page.wait_for_function("document.querySelector('.table-notice.error')?.textContent.includes('已停止后续批次')")
+    page.wait_for_function("document.querySelector('.table-notice.error')?.textContent.includes('请刷新表格确认结果')")
     assert not pending
     passed('25格分批同步首批响应失败后停止余下批次，先回读核对且不自动重试写入')
+
+    # A successful transport carrying an uncertain cell must also stop all batches.
+    page.locator('[data-action=fs-live-read-all]').click(); request=wait_read()
+    rows=[['批量达人'+str(i),'小红书','产品',''] for i in range(25)]
+    batch_data={'title':'批量审核表','revision':'batch-uncertain','sheets':[{'sheetId':'s','name':'合作内容','headers':['达人','发布平台','合作产品','大纲'],'rows':rows,'rowStart':2}]}
+    request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':batch_data},ensure_ascii=False))
+    page.wait_for_function("document.querySelectorAll('.review-table tbody tr').length===25")
+    page.locator('[data-action=fs-live-prepare-write]').click();page.locator('[data-action=fs-write-confirm]').click()
+    request=wait_read();assert json.loads(request.request.post_data)['action']=='write'
+    request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':{'written':1,'rejected':0,'uncertain':1,'notAttempted':18,'results':[{'status':'written'},{'status':'uncertain','cell':'D4','error':'结果待核对'}]}}))
+    request=wait_read();assert json.loads(request.request.post_data)['action']=='readAll'
+    request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':batch_data},ensure_ascii=False))
+    page.wait_for_function("document.querySelector('.table-notice.error')?.textContent.includes('请刷新表格确认结果')")
+    summary=state()['projects'][1]['feishu']['liveMeta']['lastWrite']
+    assert (summary['written'],summary['rejected'],summary['uncertain'],summary['notAttempted'])==(1,0,1,23),summary
+    assert not pending
+    assert page.locator('#toast.show').count()==0
+    page.screenshot(path=str(OUT/'uncertain-sync-counts.png'),full_page=True)
+    page.set_viewport_size({'width':390,'height':844});assert page.evaluate('document.documentElement.scrollWidth<=innerWidth');page.screenshot(path=str(OUT/'uncertain-sync-mobile.png'),full_page=True);page.set_viewport_size({'width':1440,'height':1000})
+    passed('首批HTTP成功但含结果不明时停止后续批；已确认、拒绝、待核对、未尝试分开计数')
 
     # Restore a 25-row source to exercise changing the link mid-write.
     page.locator('[data-action=fs-live-read-all]').click(); request=wait_read()
@@ -193,7 +214,7 @@ try:
     changed=save('TableC');reply(changed,'新表不受旧同步影响')
     page.wait_for_function("document.querySelector('.review-table')?.textContent.includes('新表不受旧同步影响')")
     request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':{'results':[{'status':'written'} for _ in range(20)]}}))
-    page.wait_for_function("document.querySelector('#toast').textContent.includes('后续批次已停止')")
+    page.wait_for_function("document.querySelector('#toast').textContent.includes('同步已暂停')")
     assert not pending and state()['projects'][1]['feishu']['liveMeta']['title']=='新表不受旧同步影响'
     passed('同步期间换链接只收尾已发出的首批，后续批次停止且不污染新表状态')
     assert not errors, errors

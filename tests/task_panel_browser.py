@@ -5,6 +5,7 @@ from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
 OUT=Path(os.environ['ZHIGAO_VERIFY_OUT'])/'task-panel';OUT.mkdir(parents=True,exist_ok=True)
 class Handler(http.server.SimpleHTTPRequestHandler):
+ protocol_version='HTTP/1.1'
  def log_message(self,*args):pass
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Handler,directory=str(ROOT)))
 threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -87,6 +88,20 @@ try:
   assert result['history']==result['original'] and result['job'] is None and result['historyJob'] is None and result['rejected']
   assert result['filename'].endswith('旧稿.doc') and result['bytes']=='synthetic old original' and result['saved']=='archive-path'
   checks.append('Current and historical original bytes survive bundle; tampering fails and archive retains the old filename')
+  page.add_style_tag(url=f'http://127.0.0.1:{server.server_port}/style.css')
+  page.evaluate('''async()=>{
+   window.value={taskId:'A',state:'uncertain',requirements:[],error:{code:'TASK_UNCERTAIN',message:'原任务调用已发出，但结果尚未确认。停止后续步骤不会撤销已执行的操作。'}};
+   window.fetch=async()=>({ok:true,json:async()=>({ok:true,data:value})});
+   const {createTaskPanel}=await import('/task-panel.js');
+   window.copyPanel=createTaskPanel({esc:s=>String(s),btn:(a,t,c='')=>`<button class="button ${c}" data-action="${a}">${t}</button>`,modal:(title,b,f)=>document.querySelector('#root').innerHTML=`<div class="modal-shade"><section class="modal"><header class="modal-header"><h2>${title}</h2></header><div class="modal-body">${b}</div><footer class="modal-footer">${f}</footer></section></div>`,toast:()=>{},connect:async()=>{}});
+   document.querySelector('#root').innerHTML='';await copyPanel.open({operation:'library'});
+  }''')
+  assert page.locator('#task-preparation-panel').inner_text()=='结果待确认\n\n请先查看稿件的处理结果。'
+  page.set_viewport_size({'width':1440,'height':1000});page.screenshot(path=str(OUT/'task-message-desktop.png'))
+  page.set_viewport_size({'width':390,'height':844});assert page.evaluate('document.documentElement.scrollWidth<=innerWidth');page.screenshot(path=str(OUT/'task-message-mobile.png'))
+  page.evaluate("async()=>{value={taskId:'A',state:'awaiting_confirmation',confirmation:{message:'安装文件处理组件，约 30 MB。'},requirements:[{state:'needs_confirmation',message:'安装文件处理组件，约 30 MB。'}]};await copyPanel.open({operation:'library'});}")
+  assert page.locator('#task-preparation-panel').inner_text().count('安装文件处理组件')==1
+  checks.append('Short task copy keeps confirmation details once and omits internal caveats')
   browser.close()
 finally:server.shutdown();server.server_close()
 (OUT/'result.json').write_text(json.dumps({'passed':True,'checks':checks},indent=2),encoding='utf-8')

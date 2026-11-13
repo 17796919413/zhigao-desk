@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.14.0",
+  "version": "1.14.1",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
@@ -127,7 +127,7 @@
   },
   "autoUpdate": {
     "protocol": 1,
-    "sha256": "747f4814fe796e9c4dd200e270fadde497a1f4cd94859b7b18f91c11ef1b6750",
+    "sha256": "9e2a4f646b410ade476c52efa17b4fb6df1520be02bf22770cedf01981bf34f7",
     "startup": true,
     "intervalHours": 6,
     "retryMinutes": 15,
@@ -136,7 +136,7 @@
   },
   "media": {
     "protocol": 1,
-    "version": "1.14.0",
+    "version": "1.14.1",
     "files": {
       "media-runtime.mjs": {
         "sha256": "78e1d5504bea6f2f69fe74f8f855f4d5655712efdd7bc63fcff537d2a0bc81c0",
@@ -152,7 +152,7 @@
     "semanticReview": "current-connected-agent"
   },
   "review": {
-    "protocolVersion": "1.14.0",
+    "protocolVersion": "1.14.1",
     "context": "Read each required brief.context section through nextCursor=null; reconstruct json-fragment records and block slices without truncation.",
     "checkpoint": "record_review_checks saves checks without completing review. Final explicit arrays replace saved arrays.",
     "basisChanges": "BASIS_CHANGED requires retry:true, updates pages and a fresh full review. Previous checks are advisory only.",
@@ -186,10 +186,10 @@
     "confirmation": "Exact task, revision, environment and current user reply; configuration never authorizes business writes.",
     "modules": {
       "task-runtime.mjs": {
-        "sha256": "7724419ba29e1a1f8f6368a5e6494ebf3f50325cf71444cc1f2f4e99648270da"
+        "sha256": "7b83cda0fe3471fb5642499727dfdd3f200857636e614543ceff25739f2d0fc9"
       },
       "channel-runtime.mjs": {
-        "sha256": "6ac45db1393a0fa09a8030b1cabd8fb273ab698e1d46fd975874c56a85174c7b"
+        "sha256": "6776595e06a21371f2b0b7585534abb64b5f9d50f9fbaf8de2b7c8310849f14f"
       },
       "task-channels.mjs": {
         "sha256": "7b8b78c04cf926f5c25b1caf46a1d70cbaf36c0565bf86aea1b11f95d42483bf"

@@ -117,6 +117,15 @@ await check('private command timeout is bounded even when a descendant holds its
  await assert.rejects(runPrivate(process.execPath,['-e',script],{timeout:300}),e=>e.code==='PROCESS_TIMEOUT'&&e.mayStillRun);
  assert(Date.now()-started<1500);
 });
+await check('Office checkpoint failures can explicitly recover only before original dispatch',async()=>{
+ for(const resumeError of ['CONVERSION_CHECKPOINT_UNSAVED','ENOSPC','EACCES','EPERM','EBUSY']){
+  const f=fixture();f.state.mediaReady=true;f.state.pending=true;f.state.resumeError=resumeError;
+  const first=await f.automatic('zhigao_get_review_brief',{docId:'D'});await f.tasks.wait(first.preparation.taskId);
+  assert.equal(f.tasks.status(first.preparation).state,'uncertain');assert.equal(f.state.originalCalls,0);
+  const checked=await f.tasks.recover(first.preparation);assert.equal(checked.recovery.safe,true);await f.tasks.resume(checked);await f.tasks.wait(checked.taskId);
+  assert.equal(f.tasks.status(checked).state,'continued');assert.equal(f.state.originalCalls,1);
+ }
+});
 await check('exhausted preparation reconnect can recover only before the original call is dispatched',async()=>{
  const f=fixture();Object.assign(f.state,{mediaReady:true,pending:true,resumeError:'PREPARATION_TRANSPORT',alwaysFail:true});
  const first=await f.automatic('zhigao_get_review_brief',{docId:'D'});await f.tasks.wait(first.preparation.taskId);

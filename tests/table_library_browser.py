@@ -13,6 +13,7 @@ def zipped(files):
  return b.getvalue()
 PPT=zipped({'ppt/slides/slide1.xml':'<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>合成品牌：星河杯容量300毫升。</a:t></a:r></a:p></p:sld>', 'ppt/notesSlides/notesSlide1.xml':'<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>备注要求：保留自然口吻。</a:t></a:r></a:p></p:notes>', 'ppt/media/image1.png':png_bytes()})
 class Handler(http.server.SimpleHTTPRequestHandler):
+ protocol_version='HTTP/1.1'
  def log_message(self,*args):pass
  def do_GET(self):
   file=Path(self.translate_path(self.path.split('?',1)[0]))
@@ -40,7 +41,7 @@ try:
   except Exception:time.sleep(.1)
  with sync_playwright() as pw:
   browser=pw.chromium.launch(channel='msedge',headless=True);context=browser.new_context(viewport={'width':1440,'height':1000})
-  page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)));page.goto(origin);page.wait_for_selector('#agent-chip')
+  page=context.new_page();page.on('requestfailed',lambda r:print('REQUESTFAILED '+r.url+' '+str(r.failure),flush=True));page.on('pageerror',lambda e:errors.append(str(e)));page.goto(origin);page.wait_for_selector('#agent-chip')
   page.evaluate("async()=>{(await import('/agent.js')).stopAgent();}")
   headers=['达人','达人类型','合作产品','发布平台','内容负责人','发布档期','大纲','脚本','初稿','品牌方反馈']
   rows=[[f'合成达人{i+1}','生活方式','星河杯','小红书','小林','2026-11-20','','/','',''] for i in range(76)]

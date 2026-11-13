@@ -20,6 +20,7 @@ PPT=zip_bytes({'ppt/slides/slide1.xml':'<p:sld xmlns:p="http://schemas.openxmlfo
 DOCX=zip_bytes({'word/document.xml':'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Word品牌反馈：不要修改真实体验。</w:t></w:r></w:p></w:body></w:document>',
  'word/comments.xml':'<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment w:id="0"><w:p><w:r><w:t>批注：增加使用场景。</w:t></w:r></w:p></w:comment></w:comments>'})
 class Handler(http.server.SimpleHTTPRequestHandler):
+ protocol_version='HTTP/1.1'
  def log_message(self,*a):pass
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Handler,directory=str(ROOT)))
 threading.Thread(target=server.serve_forever,daemon=True).start();origin=f'http://127.0.0.1:{server.server_port}'

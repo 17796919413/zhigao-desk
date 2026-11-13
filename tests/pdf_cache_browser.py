@@ -8,6 +8,7 @@ OUT=Path(os.environ.get('ZHIGAO_VERIFY_OUT',str(ROOT.parent/'_verify'/'workbuddy
 from synthetic_fixtures import pdf_bytes
 fixture=pdf_bytes(2)
 class Handler(http.server.SimpleHTTPRequestHandler):
+ protocol_version='HTTP/1.1'
  def log_message(self,*args):pass
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Handler,directory=str(ROOT)));threading.Thread(target=server.serve_forever,daemon=True).start()
 try:

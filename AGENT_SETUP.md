@@ -1,6 +1,6 @@
 # 接通知稿全部功能
 
-## 1.14.0：任务内检查、确认、准备与续办（本地候选）
+## 1.14.1：任务内检查、确认、准备与续办
 
 已连接的客户端照常调用 `zhigao_get_review_brief`、`zhigao_reopen_review`、`zhigao_prepare_video_review`、`zhigao_prepare_library_assets`、`zhigao_extract_feishu` 或 `zhigao_prepare_feishu_sync`。连接器自动检查原任务条件；已有组件直接使用，需要安装或授权时才返回 `preparation.confirmation`。向用户展示这份具体方案，取得同意后调用 `zhigao_confirm_task`，查询 `zhigao_task_status`。完成后使用 `result.originalResult` 和 `next` 接着工作，不重复发起原调用，也不要求用户手动转换或重新上传。`zhigao_plan_task` / `zhigao_resume_task` 保留作诊断及明确恢复入口。完整契约及覆盖矩阵见 `TASK_CHANNELS.md`。
 
@@ -18,7 +18,7 @@ Office 使用已有 LibreOffice；Windows x64 缺失时提供经摘要核验的�
 
 本地候选版本增加单张审核表及品牌文件资料库。当前 AI 处理品牌原件时先读同目录 `BRAND_MATERIALS.md`，按现有环境直接执行、缺项私有安装的路径准备；完整正文使用审稿上下文分页读取，不能把目录摘要当全文。新增 `zhigao_prepare_library_assets`、`zhigao_get_library_asset_status` 用于品牌视频资料，复用视频运行时安装与校验。飞书读取和进度写回均指向页面唯一的审核表链接。
 
-连接器版本 1.14.0（本地候选）。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
+连接器版本 1.14.1。这是给用户自己的 AI Agent 使用的接入流程；前端原有手动教程仍可使用。用户提供知稿网址并要求接通功能后，执行下述流程。已有配置复用，只补缺项；中断后从检查继续。
 
 连接诊断：AI 应用打开不等于当前知稿 MCP 会话仍在线。1.12.2 网页自动重试短暂中断，恢复前台/网络或点击“重新连接”立即复查；持续无法访问本机服务时显示“暂时无法连接”，不推断进程已经退出。先核对 doctor 的中转、网页和客户端状态；不要因为网页红灯直接重装或重复登录。中转响应不完整时会释放传输等待，但工具返回 CALL_TRANSPORT_UNCERTAIN 后仍须核对已保存结果，不自动重做。
 
@@ -158,7 +158,7 @@ Windows 的 setup/install 同时为当前用户注册 `zhigao-desk` 启动入口
 
 ### 自动准备与换电脑
 
-用户要求审视频时，先调用 `zhigao_video_runtime_status`。已有 FFmpeg、Python、OCR、转写模型就复用；`ready=false` 时按本页1.14.0流程创建原任务计划、取得确认并准备，查询任务状态 且运行检查 `ready=true`，随后自动继续视频准备。不要只返回安装说明后停止，不另开云端模型服务，不安装 Ollama。Windows x64 缺 Python 时，内置引导下载官方安装包并核验发布者签名，安装到知稿私有目录；其他平台缺 Python 时由 Agent 按本机允许的安装方式补齐，再从检查继续。需要权限或用户登录时才提示实际缺项。
+用户要求审视频时，先调用 `zhigao_video_runtime_status`。已有 FFmpeg、Python、OCR、转写模型就复用；`ready=false` 时按本页1.14.1流程创建原任务计划、取得确认并准备，查询任务状态 且运行检查 `ready=true`，随后自动继续视频准备。不要只返回安装说明后停止，不另开云端模型服务，不安装 Ollama。Windows x64 缺 Python 时，内置引导下载官方安装包并核验发布者签名，安装到知稿私有目录；其他平台缺 Python 时由 Agent 按本机允许的安装方式补齐，再从检查继续。需要权限或用户登录时才提示实际缺项。
 
 模型参数通常省略，复用已缓存模型，无缓存默认 large-v3-turbo。用户明确指定另一个受支持模型时，即使当前运行环境 ready 也要完成切换；核对返回模型名称，不能把旧模型的 ready 当作切换成功。安装锁表示有另一进程正在准备，等待并重新检查，不并发安装同一环境。终端备用入口：
 

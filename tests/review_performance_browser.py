@@ -15,6 +15,7 @@ baseline={}
 for name in ['review-service.js','review-context.js','review-assurance.js','media-review.js','pdf.js']:
  baseline[name]=subprocess.check_output(['git','show',BASELINE+':'+name],cwd=ROOT)
 class Handler(http.server.SimpleHTTPRequestHandler):
+ protocol_version='HTTP/1.1'
  def log_message(self,*a):pass
  def do_GET(self):
   key=self.path.split('?',1)[0]

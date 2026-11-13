@@ -5,6 +5,7 @@ from mcp_client_fixture import MCP
 sys.stdout.reconfigure(encoding='utf-8')
 ROOT=Path(__file__).resolve().parents[1];PRIOR=ROOT.parent/'_verify'/'assurance-20261110';OUT=Path(os.environ.get('ZHIGAO_VERIFY_OUT',str(PRIOR)));FIX=PRIOR/'fixtures';OUT.mkdir(exist_ok=True,parents=True)
 class Handler(http.server.SimpleHTTPRequestHandler):
+ protocol_version='HTTP/1.1'
  def log_message(self,*a):pass
  def do_GET(self):
   if self.path.startswith('/__fixture/'):

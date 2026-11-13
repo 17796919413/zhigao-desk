@@ -63,6 +63,7 @@ export function createTaskBridge(ctx, tools) {
       target={id:t.id,round:t.flow?.round,hash,cells};
     }
     const binding = {projectId: p.id, docId: t?.id || null, libraryId: request.libraryId || null,
+      operationFingerprint:await digest(stableJSON({projectId:p.id,target:target?{id:target.id,hash:target.hash,cells:target.cells}:null,originals:target?null:originals,table:['feishu_read','feishu_sync'].includes(request.operation)?tableUrl:null})),
       fingerprint: await digest(stableJSON({projectId: p.id, target, originals, notes: p.notes, rules: p.rules, table: ['feishu_read', 'feishu_sync'].includes(request.operation) ? tableUrl : null}))};
     if (current()?.id !== p.id) throw problem('PROJECT_MISMATCH', '检查期间品牌已切换，请重新检查。');
     return {binding, requirements, officeIds, mediaIds,needsPreparation:!!(officeIds.length||t?.fmt==='office-pending'||pendingMedia||t?.fmt==='video'&&(t.videoPreparation?.state!=='complete'||!t.videoAnalysis)),officeDocId:t?.fmt==='office-pending'?t.id:null, videoDocId: t?.fmt === 'video' ? t.id : null,
@@ -88,9 +89,10 @@ export function createTaskBridge(ctx, tools) {
     for (let i = 0; i < 210; i++) {
       await guard();
       result = await officeRequest({action: 'status', ...token});
-      if (['complete', 'failed', 'interrupted'].includes(result.state)) break;
+      if (['complete', 'failed', 'interrupted','checkpoint_unsaved'].includes(result.state)) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
+    if(result.state==='checkpoint_unsaved')throw problem('CONVERSION_CHECKPOINT_UNSAVED','转换结果已保留，但检查点未保存。请恢复本机存储后继续，系统会先核对已有结果。');
     if (result.state !== 'complete') throw problem('CONVERSION_FAILED', '转换未完成；原件保留，请查询转换器状态。');
     const chunks = []; let offset = 0;
     while (offset < result.size) {

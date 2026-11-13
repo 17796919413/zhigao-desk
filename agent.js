@@ -60,7 +60,7 @@ const tools={
  zhigao_prepare_feishu_sync:()=>ctx.prepareFeishuSync(),
  zhigao_read_feishu_table:args=>ctx.readFeishuTable(args),
  zhigao_status(){const {settings,tasks,items}=S(),p=findProject();const by={};for(const it of items){const pr=itemProgress(it,tasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.14.0',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.14.1',currentProject:p?.name||'',projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:items.length,documents:tasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';

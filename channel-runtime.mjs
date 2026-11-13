@@ -173,7 +173,36 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
     } finally { fs.rmSync(dir, {recursive: true, force: true}); }
   }
   // Chunked conversion transport, scoped to a single page/project/source. No arbitrary filesystem paths.
-  const conversions = path.join(root, 'conversions'), pending = new Map(), starts = new Map(), finishing = new Map();
+  const conversions = path.join(root, 'conversions'), pending = new Map(), starts = new Map(), finishing = new Map(), unsavedConversions=new Map();
+  function saveConversion(dir,meta){const tmp=path.join(dir,'meta.tmp');fs.writeFileSync(tmp,JSON.stringify(meta),{mode:0o600});fs.renameSync(tmp,path.join(dir,'meta.json'));unsavedConversions.delete(meta.id);}
+  async function recoverConversion(dir,meta){
+    if(pending.has(meta.id))return meta;
+    const volatile=unsavedConversions.get(meta.id);let recovered=false;
+    if(volatile)meta={...volatile};
+    if(meta.state==='converting'){
+      // A surviving converter may still be writing. Only a completion receipt or
+      // a dead owner allows examination of the existing result after restart.
+      let receipt;try{receipt=JSON.parse(fs.readFileSync(path.join(dir,'completed.json'),'utf8'));}catch{}
+      let alive=false;try{process.kill(meta.pid,0);alive=true;}catch(e){alive=e.code==='EPERM';}
+      if(alive&&!receipt)return meta;
+      const output=path.join(dir,'out','source.'+meta.format);
+      try{
+        const bytes=fs.readFileSync(output),end=bytes.lastIndexOf(Buffer.from([0x50,0x4b,0x05,0x06]));
+        if(bytes.subarray(0,2).toString()!=='PK'||end<0||end+22>bytes.length||end+22+bytes.readUInt16LE(end+20)!==bytes.length)return meta;
+        if(await fileHash(path.join(dir,'source.'+meta.extension))!==meta.sourceHash)return meta;
+        const outputHash=await fileHash(output);
+        if(receipt&&(receipt.sourceHash!==meta.sourceHash||receipt.outputHash!==outputHash||receipt.outputSize!==bytes.length))return meta;
+        Object.assign(meta,{state:'complete',output:path.basename(output),outputHash,outputSize:bytes.length});recovered=true;
+      }catch{return meta;}
+    }
+    if(volatile||recovered){
+      try{
+        if(meta.state==='complete'&&(await fileHash(path.join(dir,'out',meta.output))!==meta.outputHash||await fileHash(path.join(dir,'source.'+meta.extension))!==meta.sourceHash))throw failure('INTEGRITY');
+        delete meta.checkpointError;saveConversion(dir,meta);
+      }catch(e){meta.checkpointError=e.code||'CHECKPOINT_WRITE_FAILED';unsavedConversions.set(meta.id,{...meta});}
+    }
+    return meta;
+  }
   function conversion(body) {
     if (!/^[a-f0-9-]{36}$/.test(body.jobId || '')) throw failure('CONVERSION_BINDING');
     const dir = path.join(conversions, body.jobId), meta = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8'));
@@ -192,6 +221,8 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
         if (!/^[a-f0-9-]{36}$/.test(entry)) continue;
         let old; try { old = JSON.parse(fs.readFileSync(path.join(conversions, entry, 'meta.json'), 'utf8')); } catch { continue; }
         if (old.projectId === body.projectId && old.sourceHash === body.sourceHash && old.extension === body.extension && old.size === body.size) {
+          old=await recoverConversion(path.join(conversions,entry),old);
+          if(old.checkpointError)throw failure(old.checkpointError,'转换检查点尚未保存；原件和结果保留，存储恢复后将先核对结果。');
           if (old.state === 'converting' && !pending.has(old.id)) throw failure('CONVERSION_UNCERTAIN', '旧转换进程结果尚未确认，请核对原作业；不会重新转换。');
           if (old.state === 'failed') throw failure(old.error || 'CONVERSION_FAILED', '原转换未完成，请核对原文件或转换器；不会重复启动结果不明的操作。');
           return {jobId: old.id, token: old.token, state: old.state, received: fs.statSync(path.join(conversions, entry, 'source.' + old.extension)).size, reused: true};
@@ -204,8 +235,9 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
       return {jobId: id, token: meta.token, state: meta.state, received: 0};
       })().finally(() => starts.delete(key)); starts.set(key, start); return start;
     }
-    const {dir, meta} = conversion(body), source = path.join(dir, 'source.' + meta.extension);
-    const save = () => { const tmp = path.join(dir, 'meta.tmp'); fs.writeFileSync(tmp, JSON.stringify(meta), {mode: 0o600}); fs.renameSync(tmp, path.join(dir, 'meta.json')); };
+    const bound=conversion(body),dir=bound.dir,meta=await recoverConversion(dir,bound.meta),source=path.join(dir,'source.'+meta.extension);
+    const save = () => saveConversion(dir,meta);
+    if(meta.checkpointError&&body.action!=='status')throw failure(meta.checkpointError,'转换检查点尚未保存，请恢复存储后重试；不会重复转换。');
     if (body.action === 'chunk') {
       if (meta.state !== 'uploading' || !Number.isSafeInteger(body.offset) || body.offset < 0 || typeof body.data !== 'string' || body.data.length > 800000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(body.data)) throw failure('CONVERSION_OFFSET');
       const data = Buffer.from(body.data, 'base64'); if (!data.length || data.length + body.offset > meta.size) throw failure('CONVERSION_SIZE');
@@ -233,13 +265,14 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
           if (fs.readFileSync(output).subarray(0, 2).toString() !== 'PK') throw failure('CONVERSION_FAILED');
           meta.output = path.basename(output); meta.outputHash = await fileHash(output); meta.outputSize = fs.statSync(output).size; meta.state = 'complete';
         } catch (e) { meta.state = 'failed'; meta.error = e.code || 'CONVERSION_FAILED'; }
+        if(meta.state==='complete')try{fs.writeFileSync(path.join(dir,'completed.json'),JSON.stringify({sourceHash:meta.sourceHash,outputHash:meta.outputHash,outputSize:meta.outputSize}),{mode:0o600});}catch{/* The output can still be verified after the owner exits. */}
         save();
-      })().finally(() => pending.delete(meta.id)); pending.set(meta.id, job);
+      })().catch(e=>{meta.checkpointError=e.code||'CHECKPOINT_WRITE_FAILED';unsavedConversions.set(meta.id,{...meta});}).finally(() => pending.delete(meta.id)); pending.set(meta.id, job);
       return {state: 'converting'};
       })().finally(() => finishing.delete(meta.id)); finishing.set(meta.id, finish); return finish;
     }
-    if (body.action === 'status') return {state: meta.state === 'converting' && !pending.has(meta.id) ? 'interrupted' : meta.state,
-      received: fs.statSync(source).size, format: meta.format, size: meta.outputSize, sha256: meta.outputHash, error: meta.error,originalInventory:meta.originalInventory};
+    if (body.action === 'status') return {state: meta.checkpointError?'checkpoint_unsaved':meta.state === 'converting' && !pending.has(meta.id) ? 'interrupted' : meta.state,
+      persisted:!meta.checkpointError,conversionComplete:meta.state==='complete',received: fs.statSync(source).size, format: meta.format, size: meta.outputSize, sha256: meta.outputHash, error: meta.checkpointError||meta.error,originalInventory:meta.originalInventory};
     if (body.action === 'read') {
       if (meta.state !== 'complete' || !Number.isSafeInteger(body.offset) || body.offset < 0 || body.offset >= meta.outputSize) throw failure('CONVERSION_OFFSET');
       const output = path.join(dir, 'out', meta.output);

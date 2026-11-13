@@ -8,6 +8,13 @@ const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).
 const fail = (code, message) => Object.assign(Error(message), {code});
 const idPattern = /^[a-f0-9-]{36}$/;
 const runningStates = new Set(['preparing', 'verifying', 'resuming', 'cancelling']);
+function originalIdentity(call){
+ const name=call.name==='zhigao_reopen_review'?'zhigao_get_review_brief':call.name;
+ const args=Object.entries(call.args||{}).filter(([key])=>!['retry','rereview','batchId'].includes(key)).sort(([a],[b])=>a.localeCompare(b));
+ return hash([name,args]);
+}
+function sameOperation(a,b){return a.originalCall&&b.originalCall?originalIdentity(a.originalCall)===originalIdentity(b.originalCall):hash(a)===hash(b);}
+function sameOriginal(a,b){return a?.operationFingerprint&&b?.operationFingerprint?a.operationFingerprint===b.operationFingerprint:a?.fingerprint===b?.fingerprint;}
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const messages = {
   ENOSPC: '本机空间不足。释放空间后重新检查；原任务与已验证组件保留。',
@@ -20,6 +27,7 @@ const messages = {
   TASK_UNCERTAIN: '上一步结果尚未确认，请核对原任务状态；不会自动重复执行。',
   MEDIA_PREPARATION_FAILED: '视频准备未完成。核对原视频状态后，用 prepare_video_review 或 prepare_library_assets 的 retry:true 续办同一原件；不能计为已审。',
   CONVERSION_FAILED: '原件转换未完成，已保留原件和作业。请核对文件是否损坏、加密或包含不支持对象，以及转换器状态。',
+  CONVERSION_CHECKPOINT_UNSAVED: '转换结果已保留，但检查点尚未保存。恢复本机存储后调用 recover_task；续办会先核对已有输出，不会重复转换。',
   PAGE_SESSION_CHANGED: '页面已刷新或切换，已保留准备进度。恢复原品牌连接后继续同一任务。',
   PAGE_UNRESPONSIVE: '暂时无法确认工作台响应。连接恢复后继续同一任务，已完成的准备会复用。',
   PROCESS_TIMEOUT: '本机组件超时，子进程结果尚未确认。准备锁已保留，请核对中断状态后恢复；不会自动重复安装。',
@@ -119,6 +127,8 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
     if (fs.existsSync(jobs)) for (const name of fs.readdirSync(jobs)) {
       if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
       let p; try { p = read(name.slice(0, -5)); } catch { continue; }
+      if(p.binding?.projectId===report.binding?.projectId&&sameOperation(p.request,safe)
+        &&(runningStates.has(p.state)||sameOriginal(p.binding,report.binding)&&['uncertain','interrupted'].includes(p.state)))return view(p);
       if(hash(p.request)===hash(safe)&&runningStates.has(p.state))return view(p);
       if(hash(p.request)===hash(safe)&&p.signature===signature(report)&&['uncertain','interrupted'].includes(p.state))return view(p);
       if (hash(p.request) === hash(safe) && p.signature === signature(report) && !guardsChanged(p,report) && p.planSignature === requirementsSignature(report.requirements)
@@ -178,7 +188,7 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
     p = read(p.id); if (p.cancelRequested) { p.state = 'cancelled'; return save(p); }
     p.state = 'resuming'; p.stage = 'resume'; p.pid = process.pid; save(p);
     const result = await resume(p, checkpoint => {const current=read(p.id);current.resumeCheckpoint=checkpoint;save(current);});
-    p = read(p.id); p.state = p.cancelRequested ? 'cancelled' : 'continued'; p.result = result.result; p.continuation = result.next;
+    p = read(p.id); p.state = p.cancelRequested && p.resumeCheckpoint!=='original' ? 'cancelled' : 'continued'; p.result = result.result; p.continuation = result.next;
     p.stage = 'original_task'; return save(p);
   }
   function launch(p) {
@@ -197,7 +207,8 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
     if (revision !== p.revision) throw fail('PLAN_CHANGED', '确认方案已变化，请重新展示当前方案。');
     if (!['approve', 'decline'].includes(decision)) throw fail('INVALID_DECISION', '确认值无效。');
     if (decision === 'decline') {
-      if (runningStates.has(p.state)) return cancel({taskId});
+      if(p.state==='declined')return view(p);
+      if(p.state!=='awaiting_confirmation')throw fail('INVALID_TASK_STATE','当前任务不在等待确认状态；拒绝不能撤销已发出的操作。');
       p.state = 'declined'; delete p.consent; return view(save(p));
     }
     if (runningStates.has(p.state) || p.state === 'continued') return view(p);
@@ -246,7 +257,7 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
     const p = read(taskId); if (p.state === 'continued') return view(p);
     // Cancellation cannot prove that an already dispatched operation was undone.
     // Keep the unresolved journal visible to findOriginal so retry cannot bypass it.
-    if(p.state==='uncertain'&&p.stage==='resume'){p.cancelRequested=true;return view(save(p));}
+    if(p.state==='uncertain'||p.stage==='resume'&&!runningStates.has(p.state)){p.state='uncertain';p.cancelRequested=true;return view(save(p));}
     p.cancelRequested = true; p.state = runningStates.has(p.state) ? 'cancelling' : 'cancelled';
     delete p.consent; return view(save(p));
   }
@@ -263,7 +274,7 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
       fs.renameSync(writer,writer+'.recovered-'+crypto.randomUUID());
     }
     const sourceOnly=p.resumeCheckpoint==='preparation'&&['zhigao_get_review_brief','zhigao_reopen_review','zhigao_prepare_video_review','zhigao_prepare_library_assets'].includes(p.request.originalCall?.name)
-      &&['PREPARATION_TRANSPORT','PAGE_SESSION_CHANGED','PAGE_UNRESPONSIVE','CALL_QUEUE_TIMEOUT','MEDIA_PREPARATION_FAILED'].includes(p.error?.code);
+      &&['PREPARATION_TRANSPORT','PAGE_SESSION_CHANGED','PAGE_UNRESPONSIVE','CALL_QUEUE_TIMEOUT','MEDIA_PREPARATION_FAILED','CONVERSION_CHECKPOINT_UNSAVED','ENOSPC','EACCES','EPERM','EBUSY'].includes(p.error?.code);
     if(p.stage==='resume'&&!sourceOnly)return {...view(p),recovery:{safe:false,requiresUserReview:true,message:'渠道准备锁已核对；原任务步骤结果仍需核对。请检查已保存的稿件/转换结果，再重新检查当前任务。'}};
     if(sourceOnly){const report=await inspect(p.request);if(signature(report)!==p.signature||guardsChanged(p,report))return {...view(p),recovery:{safe:false,requiresUserReview:true,message:'原件或环境已变化，请核对已保存结果；不继续旧准备。'}};}
     p=applyReport(p,await inspect(p.request));
@@ -271,12 +282,11 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
   }
   function findOriginal(originalCall,projectId,binding){
     if(!projectId||!fs.existsSync(jobs))return null;
-    const callHash=call=>hash([call.name,Object.entries(call.args||{}).sort(([a],[b])=>a.localeCompare(b))]);
     for(const name of fs.readdirSync(jobs)){
       if(!/^[a-f0-9-]{36}\.json$/.test(name))continue;
       let p;try{p=read(name.slice(0,-5));}catch{continue;}
-      if(p.request.originalCall&&p.binding?.projectId===projectId&&callHash(p.request.originalCall)===callHash(originalCall)
-        &&(runningStates.has(p.state)||p.binding?.fingerprint===binding?.fingerprint&&['uncertain','interrupted','failed'].includes(p.state)))return view(p);
+      if(p.request.originalCall&&p.binding?.projectId===projectId&&originalIdentity(p.request.originalCall)===originalIdentity(originalCall)
+        &&(runningStates.has(p.state)||sameOriginal(p.binding,binding)&&['uncertain','interrupted','failed'].includes(p.state)))return view(p);
     }
     return null;
   }

@@ -137,9 +137,10 @@ class AddonTests(unittest.TestCase):
     def test_release_generator_binds_lf_bytes_and_is_idempotent(self):
         project = self.root / 'generator'
         (project / 'tools').mkdir(parents=True)
-        for name in NAMES + ['zhigao-connector.mjs', 'connector-updates.js', 'setup-manifest.json']:
+        for name in NAMES + ['zhigao-connector.mjs', 'connector-updates.js', 'setup-manifest.json','task-runtime.mjs','channel-runtime.mjs','task-channels.mjs']:
             shutil.copyfile(ROOT / name, project / name)
         shutil.copyfile(ROOT / 'tools' / 'prepare-update-manifest.mjs', project / 'tools' / 'prepare-update-manifest.mjs')
+        shutil.copyfile(ROOT / 'tools' / 'extract-office.ps1', project / 'tools' / 'extract-office.ps1')
         for _ in range(2):
             result = subprocess.run(['node', str(project / 'tools' / 'prepare-update-manifest.mjs')], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)

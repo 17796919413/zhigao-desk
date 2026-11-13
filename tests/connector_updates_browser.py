@@ -15,6 +15,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    protocol_version='HTTP/1.1'
     def log_message(self, *args):
         pass
 
