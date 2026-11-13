@@ -127,7 +127,7 @@ try:
   page.locator('.navbtn[data-page=feishu]').click();page.locator('[data-action=fs-live-read-all]').click()
   page.wait_for_selector('[data-action=task-approve]');page.locator('[data-action=task-approve]').click()
   page.wait_for_selector('#task-preparation-panel a');page.locator('[data-action=task-resume]').click()
-  page.wait_for_function("document.querySelector('#task-preparation-panel')?.textContent.includes('已继续原任务')",timeout=60000)
+  page.wait_for_function("document.querySelector('#task-preparation-panel .connect-intro')?.textContent==='已继续'",timeout=60000)
   assert page.evaluate('JSON.parse(localStorage.getItem("zhigao-settings-v1")).projects[0].feishu.sheets.length')>0
   page.locator('[data-action=close-modal]').first.click()
   passed('原有网页读表按钮发现缺授权并接回同一表；只保存本地读取结果，不创建云端文档')
