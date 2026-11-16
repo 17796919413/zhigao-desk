@@ -1,3 +1,4 @@
+import {tombstoneKey} from './record-storage.js';
 // 只删除知稿数据库记录；不接触本地归档文件或飞书。
 export function deleteContentRecords(db,{docIds=[],itemId=null}){
  if(!db)return Promise.reject(Error('浏览器数据库不可用，未执行删除。'));
@@ -17,8 +18,8 @@ export function deleteContentRecords(db,{docIds=[],itemId=null}){
     const owners=snapshot.items.filter(i=>removedItems.has(i.id)&&i.author&&!snapshot.items.some(other=>!removedItems.has(other.id)&&other.projectId===i.projectId&&other.author===i.author));
     const liveIds=new Set(snapshot.tasks.map(t=>t.id));
     for(const b of snapshot.batches)for(const e of b.entries)if(!liveIds.has(e.docId)&&owners.some(i=>i.projectId===b.projectId&&i.author===e.author))ids.add(e.docId);
-    for(const id of ids){tx.objectStore('tasks').delete(id);tx.objectStore('media').delete(id);}
-    for(const id of removedItems)tx.objectStore('items').delete(id);
+    for(const id of ids){tx.objectStore('integrations').put({id:tombstoneKey('tasks',id),kind:'deleted-record',deletedAt:new Date().toISOString()});tx.objectStore('tasks').delete(id);tx.objectStore('media').delete(id);}
+    for(const id of removedItems){tx.objectStore('integrations').put({id:tombstoneKey('items',id),kind:'deleted-record',deletedAt:new Date().toISOString()});tx.objectStore('items').delete(id);}
     const updatedBatches=[],deletedBatches=[],updatedIntegrations=[],deletedReviewCheckpoints=[];
     for(const b of snapshot.batches){const entries=b.entries.filter(e=>!ids.has(e.docId));if(entries.length===b.entries.length)continue;if(!entries.length){tx.objectStore('batches').delete(b.id);deletedBatches.push(b.id);}else{const updated={...b,entries,updated:new Date().toISOString()};tx.objectStore('batches').put(updated);updatedBatches.push(updated);}}
     for(const integration of snapshot.integrations){if(!integration.taskIds?.some(id=>removedItems.has(id)))continue;const updated={...integration,taskIds:integration.taskIds.filter(id=>!removedItems.has(id))};tx.objectStore('integrations').put(updated);updatedIntegrations.push(updated);}

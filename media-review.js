@@ -1,3 +1,4 @@
+import {readWorkbook,workbookCells} from './xlsx.js';
 import {digest} from './review-assurance.js';
 import {readPdf,renderPdfPage} from './pdf.js';
 import {seekTo} from './video.js';
@@ -15,7 +16,7 @@ export function createMediaInspector({onProgress=()=>{}}={}){
  const cache=new Map();let size=0;
  return async task=>{
   if(!task.buffer)return inspectReviewMedia(task);
-  const sourceHash=await digest(task.buffer),key=await digest(JSON.stringify({sourceHash,fmt:task.fmt,filename:task.filename,pages:task.pages}));
+  const sourceHash=await digest(task.buffer),key=await digest(JSON.stringify({sourceHash,fmt:task.fmt,filename:task.filename,pages:task.pages,cellIds:(task.cells||[]).map(c=>c.id)}));
   onProgress('source-verified');
   const found=cache.get(key);if(found){cache.delete(key);cache.set(key,found);return structuredClone(found.value);}
   const value=await inspectReviewMedia(task,{sourceHash,onProgress}),bytes=JSON.stringify(value).length*2;
@@ -42,6 +43,7 @@ export async function inspectReviewMedia(task,verified={}){
   }
   const images=paths.filter(p=>p.includes('/media/')||referenced.has(p)&&IMAGE_EXT.test(p));
   for(const path of images){const readable=safeImage(path);assets.push(item('file:'+path,'image',(locations.get(path)||[path]).join('；'),{path,mimeType:mimeFor(path),readable,coverage:readable?'full':'unsupported'}));if(!readable)blockers.push(`图片格式或动画尚不支持完整审核：${path}`);}
+  if(fmt==='xlsx'){const book=await readWorkbook(task.buffer);blockers.push(...book.blockers);const known=new Set((task.cells||[]).map(c=>c.id));supplementalText.push(...workbookCells(book).filter(c=>!known.has(c.id)).map(c=>({...c,note:c.note||'工作表补充内容，只读'})));}
   if(fmt==='pptx'){
    for(const path of paths.filter(p=>/^ppt\/(slides\/slide|notesSlides\/notesSlide)\d+\.xml$/.test(p)).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))){
     const d=xml(await zip.file(path).async('string')),text=all(d,'p').map(p=>all(p,'t').map(t=>t.textContent).join('')).filter(Boolean).join('\n');

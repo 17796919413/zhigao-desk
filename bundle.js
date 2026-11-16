@@ -1,3 +1,4 @@
+import {validateBundle} from './bundle-validation.js';
 // 交接 / 备份包：一个 .zip，里面是 manifest.json（项目、任务、稿件记录）和 files/ 下的原件。
 // 只在本机生成和读取，不上传任何地方。
 import {digest,stableJSON} from './review-assurance.js';
@@ -24,6 +25,7 @@ export async function readBundle(file){
  if(data.kind!==BUNDLE_KIND)throw Error('这不是知稿的交接包。');
  if(data.version>BUNDLE_VERSION)throw Error('这个交接包来自更新版本的工作台，请先更新工作台再导入。');
  for(const key of ['projects','items','docs'])if(!Array.isArray(data[key]))throw Error('交接包结构不完整：'+key);
+ validateBundle(data);
  const projectIds=new Set(data.projects.map(p=>p.id));if(projectIds.size!==data.projects.length||data.projects.some(p=>typeof p.id!=='string'||!p.id||typeof p.name!=='string')||data.docs.some(d=>!projectIds.has(d.projectId)))throw Error('交接包品牌归属不完整。');
  if(data.version>=2)for(const p of data.projects)if(await digest(stableJSON(p))!==data.projectHashes?.[p.id])throw Error('交接包品牌资料版本校验失败。');
  const get=async p=>{const f=p&&zip.file(p);if(!f)throw Error(`交接包缺少文件：${p}`);return f.async('arraybuffer');};

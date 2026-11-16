@@ -1,3 +1,4 @@
+import {reviewScope} from './review-summary.js';
 import {aiContextPrompt,parseAI,fingerprint} from './engine.js';
 import {reviewBlocks,reviewError,parseReview} from './review-protocol.js';
 import {ASSURANCE_VERSION,digest,buildBasisManifest,assuranceInstruction,validateReviewAssurance} from './review-assurance.js';
@@ -5,7 +6,7 @@ import {createMediaInspector,readReviewAsset} from './media-review.js';
 import {feedbackFor} from './draft-feedback.js';
 import {hydrateLibraryProject,materializeLibraryFile} from './library-assets.js';
 import {reviewNotes,effectiveRules} from './brand.js';
-import {flowOf} from './model.js';
+import {flowOf,currentDocuments} from './model.js';
 import {createKnowledgeCache,stableJSON} from './review-knowledge.js';
 import {basisChanges,basisUpdateSummary,contextPage,contextSections,contextSummary,mergeReviewChecks,previousChecks,unreadContext,validateCheckIds} from './review-context.js';
 export const REVIEW_LEASE_MS=15*60*1000;
@@ -181,7 +182,7 @@ export function createReviewService(ctx){
   async zhigao_create_review_batch({docIds}={}){
    await recover();const p=project(S().settings.selected);if(p.status==='ended')fail('PROJECT_ENDED','当前项目已结束。');
    if(docIds!==undefined&&(!Array.isArray(docIds)||!docIds.length||docIds.some(id=>typeof id!=='string')))fail('INVALID_DOC_IDS','docIds 须为非空稿件 ID 数组。');
-   const docs=docIds?[...new Set(docIds)].map(doc):S().tasks.filter(t=>t.projectId===p.id&&(!t.ai||t.fullReviewPending)&&flowOf(t).state==='review');
+   const docs=docIds?[...new Set(docIds)].map(doc):currentDocuments(S().tasks.filter(t=>t.projectId===p.id)).filter(t=>(!t.ai||t.fullReviewPending)&&flowOf(t).state==='review');
    if(docs.some(t=>t.projectId!==p.id))fail('PROJECT_MISMATCH','只能为当前项目建立批次。');
    const existing=(S().batches||[]).find(b=>b.projectId===p.id&&b.entries.some(unfinished)&&docs.every(t=>b.entries.some(e=>e.docId===t.id&&e.round===flowOf(t).round))&&b.entries.filter(unfinished).every(e=>docs.some(t=>t.id===e.docId&&flowOf(t).round===e.round)));
    if(existing)return {...batchSummary(existing),reused:true};
@@ -220,7 +221,7 @@ export function createReviewService(ctx){
    let parsed;try{parsed=parseReview(data,view,e.snapshot);}catch(error){if(error.code)throw error;fail('INVALID_RESULT',error.message);}
    const assurance=validateReviewAssurance(data,view,p,parsed,manifest,e.media,e.mediaReceipts);parsed.assurance=assurance;parsed.processingWarnings=copy(e.media.warnings||[]);parsed.blockingWarnings=[...new Set([...parsed.blockingWarnings,...assurance.blockingWarnings])];parsed.warnings=[...new Set([...parsed.warnings,...assurance.warnings,...(e.media.warnings||[]),...parsed.blockingWarnings])];parsed.coverage.complete=parsed.coverage.complete&&assurance.complete;parsed.needsSupplement=!parsed.coverage.complete;
    if(dryRun)return {ok:true,validated:true,complete:parsed.coverage.complete,validation:{schemaValid:true,evidenceComplete:assurance.complete},imported:0,changes:parsed.changes.length,coverage:parsed.coverage,assurance,needsSupplement:parsed.needsSupplement,leaseExpiresAt:e.leaseExpiresAt};
-   const ai={...parsed,at:now(),submissionResult:raw,reviewToken,reviewIdentity:current.identity.hash,...(batchId?{batchId}:{})},updated={...t,ai,fullReviewPending:false,updated:now()};
+   const ai={...parsed,scope:reviewScope(t),at:now(),submissionResult:raw,reviewToken,reviewIdentity:current.identity.hash,...(batchId?{batchId}:{})},updated={...t,ai,fullReviewPending:false,updated:now()};
    if(t.ai)updated.aiHistory=[...(t.aiHistory||[]),copy(t.ai)];
    const completed={...e,status:ai.needsSupplement?'partial':'pending',assuranceComplete:assurance.complete,completedAt:ai.at,reason:ai.needsSupplement?'文字、品牌依据或素材尚未完整核对，请查看缺项。':'',imported:ai.changes.length,warnings:ai.warnings.length,blockingWarnings:ai.blockingWarnings.length,coverage:copy(ai.coverage)};delete completed.basis;
    if(b){Object.assign(e,completed);delete e.basis;b.updated=now();}

@@ -1,6 +1,7 @@
 import {esc} from './engine.js';
 // Internal completion checks stay out of the interface and exported opinions.
-export function reviewNeedsAttention(t,p){return !!t.ai&&(t.ai.needsSupplement||!t.ai.assurance?.complete||t.fullReviewPending||!!p&&t.ai.assurance.projectRevision!==(p.date||''));}
+export const reviewScope=t=>JSON.stringify([t.projectId,t.itemId,t.author,t.platform,t.kind,t.stage]);
+export function reviewNeedsAttention(t,p){return !!t.ai&&(t.ai.needsSupplement||!t.ai.assurance?.complete||t.fullReviewPending||!!p&&t.ai.assurance.projectRevision!==(p.date||'')||!!t.ai.scope&&t.ai.scope!==reviewScope(t));}
 export function reviewWarnings(t){
  const ai=t.ai;if(!ai)return [];
  const internal=new Set([...(ai.blockingWarnings||[]),...(ai.processingWarnings||[])]);

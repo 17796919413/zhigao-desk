@@ -32,7 +32,9 @@ for name in ['media-runtime.mjs','media-worker.py']:shutil.copyfile(ROOT/name,OU
 env={**os.environ,'ZHIGAO_PORT':str(port),'ZHIGAO_AUTO_UPDATE':'0','ZHIGAO_ORIGINS':origin,'ZHIGAO_MEDIA_HOME':str(ROOT.parent/'_verify'/'assurance-20261110'/'fresh-runtime')}
 log=(OUT/'connector.log').open('w',encoding='utf-8');process=subprocess.Popen(['node',str(connector),'hub'],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
 checks=[];errors=[];client=None
-def passed(s):checks.append(s);print('PASS '+s,flush=True)
+def passed(s):
+ checks.append(s);print('PASS '+s,flush=True)
+ (OUT/'progress.json').write_text(json.dumps({'completed':False,'checks':checks,'errors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
 try:
  for _ in range(100):
   try:
@@ -101,7 +103,12 @@ try:
   passed('品牌资料刷新后保留；审核表与资料库桌面和390px手机无页面溢出')
   # Unsupported active sources must block completion; later disable them explicitly for the valid-source read checks.
   page.locator('.navbtn[data-page=home]').click()
-  page.locator('#file-input').set_input_files({'name':'【测试达人】图文大纲.txt','mimeType':'text/plain','buffer':'星河杯容量300毫升。'.encode()});page.wait_for_selector('.wb-row');doc_id=page.locator('.wb-row').first.get_attribute('data-doc-id')
+  page.locator('#file-input').set_input_files({'name':'【测试达人】图文大纲.txt','mimeType':'text/plain','buffer':'星河杯容量300毫升。'.encode()})
+  page.wait_for_selector('.wb-row,[data-upload-choice]')
+  # The filename does not name the product; resolve the assignment explicitly.
+  if page.locator('[data-upload-choice]').count():
+   page.locator('[data-upload-choice]').select_option('0');page.locator('[data-action=wb-upload-assign]').click()
+  page.wait_for_selector('.wb-row');doc_id=page.locator('.wb-row').first.get_attribute('data-doc-id')
   page.evaluate("async()=>{(await import('/agent.js')).startAgent();}")
   client=MCP(connector,env,log,page)
   def raw(name,args=None):return client.call(name,args or {})
@@ -161,10 +168,11 @@ try:
   assert not section(brief,'media')[0]['blockers']
   passed('真实本机视频完整准备，经新增 MCP 工具读取品牌视频画面及原声音频，原件绑定正确')
   # Synthetic completed AI advice, used only to verify synchronization UI and the confirmation boundary.
-  page.evaluate("""async id=>{const s=JSON.parse(localStorage.getItem('zhigao-settings-v1')),sheet=s.projects[0].feishu.sheets.find(s=>s.liveId==='sheetA'),db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk',6);q.onsuccess=()=>r(q.result)});const read=(store,key)=>new Promise(r=>{const q=db.transaction(store).objectStore(store).get(key);q.onsuccess=()=>r(q.result)});const t=await read('tasks',id),it=await read('items',t.itemId),{rowKey}=await import('/feishu.js');Object.assign(it,{author:'测试达人',platform:'小红书',title:'星河杯',kind:'图文',feishu:{sheetId:sheet.id,key:rowKey(sheet,0)}});Object.assign(t,{stage:'大纲',ai:{changes:[],needsSupplement:false}});await new Promise((r,j)=>{const tx=db.transaction(['tasks','items'],'readwrite');tx.objectStore('tasks').put(t);tx.objectStore('items').put(it);tx.oncomplete=r;tx.onerror=()=>j(tx.error)});}""",doc_id)
+  page.evaluate("""async id=>{const s=JSON.parse(localStorage.getItem('zhigao-settings-v1')),sheet=s.projects[0].feishu.sheets.find(s=>s.liveId==='sheetA'),db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk',6);q.onsuccess=()=>r(q.result)});const read=(store,key)=>new Promise(r=>{const q=db.transaction(store).objectStore(store).get(key);q.onsuccess=()=>r(q.result)});const t=await read('tasks',id),it=await read('items',t.itemId),{rowKey}=await import('/feishu.js');Object.assign(it,{author:'测试达人',platform:'小红书',title:'星河杯',kind:'图文',feishu:{sheetId:sheet.id,key:rowKey(sheet,0)}});Object.assign(t,{stage:'大纲',fullReviewPending:false,ai:{changes:[],needsSupplement:false,assurance:{complete:true,projectRevision:s.projects[0].date||''}}});await new Promise((r,j)=>{const tx=db.transaction(['tasks','items'],'readwrite');tx.objectStore('tasks').put(t);tx.objectStore('items').put(it);tx.oncomplete=r;tx.onerror=()=>j(tx.error)});}""",doc_id)
   page.reload();page.wait_for_selector('.wb-row');page.locator('.navbtn[data-page=feishu]').click();page.locator('[data-action=fs-ai-sync]').click();page.wait_for_selector('[data-action=fs-write-confirm]')
   assert not writes and 'AI已审' in page.locator('.modal').inner_text()
-  page.locator('[data-action=fs-write-confirm]').click();page.wait_for_function('document.querySelector(".table-notice") && document.querySelector(".content").textContent.includes("最近同步：成功")')
+  page.locator('[data-action=fs-write-confirm]').click()
+  page.wait_for_function('JSON.parse(localStorage.getItem("zhigao-settings-v1")).projects[0].feishu.liveMeta.lastWrite?.written>0 && document.querySelector(".content").textContent.includes("已同步")')
   assert any(w['value']=='AI已审 · 0处修改 · 待复核' for w in writes)
   page.screenshot(path=str(OUT/'table-sync.png'),full_page=True)
   passed('AI同步入口真实读取差异；页面确认前零写入，确认后写入正确单元格并回读更新原生表格（飞书API使用隔离夹具）')
@@ -188,6 +196,12 @@ try:
   assert not errors,errors
   (OUT/'result.json').write_text(json.dumps({'checks':checks,'errors':errors,'videoStatus':status,'screenshots':[p.name for p in OUT.glob('*.png')]},ensure_ascii=False,indent=2),encoding='utf-8')
   context.close();browser.close()
+except Exception:
+ try:
+  page.screenshot(path=str(OUT/'failure.png'),full_page=True)
+  (OUT/'failure.json').write_text(json.dumps({'checks':checks,'errors':errors,'page':page.locator('body').inner_text(),'writes':writes},ensure_ascii=False,indent=2),encoding='utf-8')
+ except Exception:pass
+ raise
 finally:
  if client:client.close()
  process.terminate();process.wait(timeout=15);server.shutdown();log.close()

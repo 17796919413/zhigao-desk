@@ -17,7 +17,7 @@ export function parseReview(data,task,snapshot){
  for(const p of data.patches||[]){const id=p.cellId||p.id;cell(id);if(changes.has(id))fail('MIXED_BLOCK_EDITS',`${id} 不能同时使用整段修改和局部替换。`,{cellId:id});if(!groups.has(id))groups.set(id,[]);groups.get(id).push(p);}
  for(const [id,patches] of groups){const c=cell(id),edits=[];
   for(const p of patches){
-   if(typeof p.find!=='string'||!p.find.length||typeof p.replace!=='string')fail('INVALID_PATCH',`${id} 的 find 须为非空文字，replace 须为文字。`,{cellId:id});
+   if(typeof p.find!=='string'||!p.find.length||typeof p.replace!=='string'||p.find.length>30000||p.replace.length>30000)fail('INVALID_PATCH',`${id} 的 find 须为非空文字，单次 find/replace 不得超过 30000 字。`,{cellId:id});
    const positions=[];for(let at=0;(at=c.current.indexOf(p.find,at))!==-1;at++)positions.push(at);
    if(!positions.length)fail('PATCH_NOT_FOUND',`${id} 未找到指定原句。`,{cellId:id,find:p.find});
    if(p.occurrence===undefined&&positions.length!==1)fail('PATCH_AMBIGUOUS',`${id} 原句出现 ${positions.length} 次，请指定 occurrence（从 1 开始，或 all）。`,{cellId:id,matches:positions.length});
@@ -25,10 +25,11 @@ export function parseReview(data,task,snapshot){
    if(n!=='all'&&(!Number.isInteger(n)||n<1||n>positions.length))fail('INVALID_OCCURRENCE',`${id} occurrence 超出匹配范围。`,{cellId:id,matches:positions.length});
    for(const start of n==='all'?positions:[positions[n-1]])edits.push({start,end:start+p.find.length,text:p.replace});
   }
+  const growth=edits.reduce((sum,x)=>sum+Math.max(0,x.text.length-(x.end-x.start)),0);if(growth>30000)fail('INVALID_PATCH',`${id} 局部替换累计新增不得超过 30000 字。`,{cellId:id});
   edits.sort((a,b)=>a.start-b.start);let end=0,revised='';for(const x of edits){if(x.start<end)fail('PATCH_OVERLAP',`${id} 局部替换范围重叠。`,{cellId:id});revised+=c.current.slice(end,x.start)+x.text;end=x.end;}revised+=c.current.slice(end);
   changes.set(id,{id,original:c.current,revised,reason:patches.map(p=>p.reason||'局部替换').join('；')});
  }
- for(const [id,x] of changes){const c=cell(id);if(typeof x.revised!=='string'||x.revised.length>30000)fail('INVALID_REVISED',`${id} 修改内容格式不正确或超过 30000 字。`,{cellId:id});if(c.note&&x.revised!==c.current)fail('BLOCK_READ_ONLY',`${id} 含不可安全改写的内容，请列入 blockingWarnings。`,{cellId:id,note:c.note});}
+ for(const [id,x] of changes){const c=cell(id);if(typeof x.revised!=='string'||!groups.has(id)&&x.revised.length>30000)fail('INVALID_REVISED',`${id} 整段修改超过 30000 字，请使用局部 patches。`,{cellId:id});if(c.note&&x.revised!==c.current)fail('BLOCK_READ_ONLY',`${id} 含不可安全改写的内容，请列入 blockingWarnings。`,{cellId:id,note:c.note});}
  const blocks=reviewBlocks(task),allIds=new Set(blocks.map(c=>c.id)),reported=data.reviewedIds!==undefined;
  if(reported&&(!Array.isArray(data.reviewedIds)||data.reviewedIds.some(id=>!allIds.has(id))||new Set(data.reviewedIds).size!==data.reviewedIds.length))fail('INVALID_COVERAGE','reviewedIds 必须是已审非空单元的 ID，不能未知或重复。');
  const reviewedIds=reported?data.reviewedIds:[],unreviewedIds=blocks.filter(c=>!reviewedIds.includes(c.id)).map(c=>c.id);

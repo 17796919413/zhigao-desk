@@ -1,5 +1,9 @@
 # 本地开发回归
 
+业务一致性回归：`node tests/business_consistency_test.mjs`、`python -X utf8 tests/business_consistency_browser.py`、`python -X utf8 tests/business_edges_browser.py`。每个浏览器入口指定不同的新 `ZHIGAO_VERIFY_OUT`，防止结果同名覆盖。覆盖双标签版本冲突和草稿恢复、删除保护、导入整批提交与中断恢复、导入结构与截图校验、内容归属选择、当前轮次、审核失效、Excel类型/公式只读与旧数据升级、跨年日期、长段补丁，以及保扩展名的真实OPFS归档。`ZHIGAO_TEST_IDS` 可用逗号分隔指定对应测试ID；最终汇总须注明是否只跑了选定项。
+
+新的提炼记录带 `rowId`，复核可改产品字段，但须保持行标识、达人、平台。历史记录在读取时补稳定行标识。Excel数字、布尔、日期和公式缓存参与审阅，原生导出保留其类型；缺公式缓存、错误值和无法可靠呈现的格式须保留阻断。交接包预检要求稿件有有效任务归属，合成夹具也必须构造对应的 `items`。不能删掉这些断言来迁就旧夹具。
+
 `table_library_resilience_browser.py` 另覆盖12组真实浏览器故障场景：换链接与换品牌、读取乱序、配额失败、403/429/500与恢复、空文件、同名更新重复点击、导入期间并发编辑、损坏PPTX与长文件名、外部原件变化/缺失、25格分批写入中断及中途换链接。需指定新的 `ZHIGAO_VERIFY_OUT`；只使用隔离响应、合成文件与OPFS，不访问真实飞书或用户目录。`connector_runtime_test.py` 包含慢进程身份检查导致健康连接过期，以及身份真正改变时继续拒绝重启。`environment_browser.py` 会故意延迟新页连接，等就绪后验证检查点恢复。
 
 单表与品牌资料回归：`node tests/table_library_test.mjs` 和 `python -X utf8 tests/table_library_browser.py`。后者使用随机端口、隔离 Edge、真实 stdio MCP、合成 Office/PDF/文本、隔离飞书 API 响应以及 OPFS 模拟目录授权；不会写真实飞书。视频验证复用 `_verify/assurance-20261110/fixtures/full-review-test.mp4` 与该目录的 `fresh-runtime` 私有测试环境，只算本机已有环境验证，不能冒称另一台空环境已通过。

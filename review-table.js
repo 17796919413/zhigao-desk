@@ -11,7 +11,7 @@ export function migrateReviewTable(settings){
 export function tableModel(project,items,docsOf,{sheetId='',query='',filter='',page=0,pageSize=50}={}){
  const f=project.feishu||{},sheets=(f.sheets||[]).filter(s=>s.live&&!s.stale&&s.sourceUrl===f.refined?.url),sheet=sheets.find(s=>s.id===sheetId)||sheets[0];
  if(!sheet)return {sheets,sheet:null,rows:[],count:0,page:0,pages:1};
- const plans=buildPlan(items.filter(i=>i.projectId===project.id&&i.feishu?.sheetId===sheet.id),docsOf,[sheet]);
+ const plans=buildPlan(items.filter(i=>i.projectId===project.id&&i.feishu?.sheetId===sheet.id),docsOf,[sheet],project);
  const byRow=new Map();for(const e of plans){if(e.error||!Number.isInteger(e.row))continue;const list=byRow.get(e.row)||[];list.push(e);byRow.set(e.row,list);}
  const q=query.trim().toLowerCase();
  const rows=sheet.rows.map((values,index)=>{const plans=byRow.get(index)||[],cells=plans.flatMap(e=>e.cells||[]);return {values,index,key:rowKey(sheet,index),plans,cells,updates:cells.filter(c=>c.status==='update').length,conflicts:cells.filter(c=>c.status==='conflict').length};})

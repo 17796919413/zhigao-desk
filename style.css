@@ -122,3 +122,4 @@
 .modal:has(.library-media-preview){display:flex;flex-direction:column;overflow:hidden}
 .modal:has(.library-media-preview) .modal-body{overflow:auto;min-height:0}
 .modal:has(.library-media-preview) .modal-header,.modal:has(.library-media-preview) .modal-footer{flex-shrink:0}
+.wb-upload-row label{display:grid;gap:6px;min-width:0;max-width:100%}.wb-upload-row select{max-width:100%}

@@ -5,8 +5,10 @@ export const EXEC_LABELS={author:'达人',type:'达人类型',product:'合作产
 export const executionKey=e=>[normName(e.author),normName(e.platform),normName(e.product)].join('|');
 export function reviewExecutionRows(original,submitted){
  if(!Array.isArray(submitted)||submitted.length!==original.length)throw Error('复核须保留原始达人及平台清单。');
- const identity=e=>normName(e.author)+'|'+e.platform,byId=new Map(original.map(e=>[identity(e),e])),seen=new Set();
- return submitted.map(raw=>{const id=identity(raw),old=byId.get(id);if(!old||seen.has(id))throw Error('复核须保留原始达人及平台清单。');seen.add(id);
+ const identity=e=>normName(e.author)+'|'+e.platform,seen=new Set();
+ return submitted.map(raw=>{let hits=raw.rowId?original.filter(e=>e.rowId===raw.rowId):original.filter(e=>executionKey(e)===executionKey(raw));
+  if(!raw.rowId&&!hits.length)hits=original.filter(e=>identity(e)===identity(raw));
+  const old=hits.length===1?hits[0]:null;if(!old||seen.has(old)||identity(old)!==identity(raw))throw Error('复核须保留原始行标识、达人及平台清单。');seen.add(old);
   const next={...old};for(const k of [...EXEC_FIELDS,'group'])if(raw[k]!==undefined){if(typeof raw[k]!=='string'||raw[k].length>500)throw Error('复核字段需为简短文本。');next[k]=raw[k].trim();}
   if(!['','视频','图文'].includes(next.kind))throw Error('内容形式请选择图文或视频，未明确时留空。');
   next.author=old.author;next.platform=old.platform;next.on=!!next.kind;return next;
@@ -18,7 +20,7 @@ export function validateExecutionRows(rows){
   const row={};for(const k of EXEC_FIELDS){const s=String(e[k]??'').trim();if(s.length>500)throw Error(`${EXEC_LABELS[k]}过长，请人工核对。`);row[k]=s;}
   if(!row.author||!['抖音','小红书','其他'].includes(row.platform)||!['视频','图文'].includes(row.kind))throw Error('请补齐达人、平台和内容形式后确认。');
   if(seen.has(executionKey(row)))throw Error('所选记录中有相同达人、平台和产品，请去重或区分产品后确认。');seen.add(executionKey(row));
-  return {...row,group:String(e.group||'执行部分').slice(0,120),source:e.source?{sheetId:String(e.source.sheetId||''),row:Number(e.source.row)||0}:null};
+  return {...row,...(e.rowId?{rowId:e.rowId}:{}),group:String(e.group||'执行部分').slice(0,120),source:e.source?{sheetId:String(e.source.sheetId||''),row:Number(e.source.row)||0}:null};
  });
 }
 export function executionTask(e){return {author:e.author,platform:e.platform,kind:e.kind,type:e.type,title:e.product,date:dateISO(e.date)};}
@@ -29,4 +31,4 @@ export function seedColumns(headers){
  if(!['author','platform','product'].every(f=>seen.has(f)))throw Error('精炼表必须包含达人、发布平台和合作产品列。');return fields;
 }
 export function seedRows(headers,entries){const fs=seedColumns(headers);return entries.map(e=>fs.map(f=>f==='script'&&e.kind==='图文'?'/':EXEC_FIELDS.includes(f)?String(e[f]||''):''));}
-export function extractionDefaults(e){const ps=platformsOf(e.platform);return {...e,platform:ps.length===1?ps[0]:'',kind:kindOf(e.kind),on:!!e.author&&ps.length===1&&!!kindOf(e.kind)};}
+export function extractionDefaults(e,index=0){const ps=platformsOf(e.platform);return {...e,rowId:e.rowId||'row-'+index,platform:ps.length===1?ps[0]:'',kind:kindOf(e.kind),on:!!e.author&&ps.length===1&&!!kindOf(e.kind)};}

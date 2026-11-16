@@ -37,9 +37,12 @@ export function nextRound(prev){const f=flowOf(prev),n=newFlow(f.round+1);n.subm
 // 内容任务 = 一个达人在一个平台的一篇内容。发布信息记在任务上，品牌通过不等于已发布。
 export const PUBLISH_STATES=['待排期','已排期','已发布'];
 export const PUBLISH_TONE={'待排期':'amber','已排期':'gray','已发布':'dark'};
+// Activity timestamps never change which version is current.
+export function currentDocumentForStage(docs,stage){return docs.filter(d=>d.stage===stage).sort((a,b)=>(Number(flowOf(b).round)||1)-(Number(flowOf(a).round)||1)||String(b.created||'').localeCompare(String(a.created||''))||String(b.id||'').localeCompare(String(a.id||'')))[0]||null;}
+export function currentDocuments(docs){const groups=new Map();for(const d of docs){const key=JSON.stringify([d.projectId,d.itemId||d.id,d.stage]);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(d);}return [...groups.values()].map(list=>currentDocumentForStage(list,list[0].stage));}
 // 进度以最后一个有稿件的阶段为准；更早且没有稿件的阶段记为“未记录”，不算待办。
 export function itemProgress(item,docs){
- const stages=reviewStagesFor(item.kind).map(name=>{const doc=docs.filter(d=>d.stage===name).sort((a,b)=>String(b.updated).localeCompare(String(a.updated)))[0]||null;return{name,doc,state:doc?flowOf(doc).state:'none'};});
+ const stages=reviewStagesFor(item.kind).map(name=>{const doc=currentDocumentForStage(docs,name);return{name,doc,state:doc?flowOf(doc).state:'none'};});
  let last=-1;stages.forEach((s,k)=>{if(s.doc)last=k;});
  const at=last<0?0:stages[last].state==='passed'?last+1:last;
  if(at>=stages.length){const ps=item.publish?.status||'待排期';return{stages,current:'发布',state:'publish',label:ps,tone:PUBLISH_TONE[ps]||'amber',doc:null};}
