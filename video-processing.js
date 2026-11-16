@@ -3,11 +3,19 @@ const ENDPOINT='http://127.0.0.1:47821/page/media';
 async function request(body){const response=await fetch(ENDPOINT,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(body),credentials:'omit',redirect:'error',cache:'no-store'}),value=await response.json();if(!response.ok||!value.ok)throw Object.assign(Error(value.error||'本机视频组件未响应。'),{code:value.code||'MEDIA_ERROR'});return value.data;}
 const b64=buffer=>{const a=new Uint8Array(buffer);let s='';for(let i=0;i<a.length;i+=32768)s+=String.fromCharCode(...a.subarray(i,i+32768));return btoa(s);};
 export function createVideoProcessor(ctx){
- const pending=new Map(),canonical=new Map(),get=id=>ctx.state().tasks.find(t=>t.id===id);
+ const pending=new Map(),canonical=new Map(),statusPending=new Map(),writes=new Map(),get=id=>ctx.state().tasks.find(t=>t.id===id);
  const selected=id=>{const t=get(id);if(!t||t.projectId!==ctx.state().settings.selected)throw Object.assign(Error('请切换到视频所属品牌。'),{code:'PROJECT_MISMATCH'});if(t.fmt!=='video')throw Error('这份稿件不是视频。');return t;};
  const binding=t=>({docId:t.id,projectId:t.projectId,revision:t.mediaRevision,...t.videoPreparation?.job});
- async function save(t,patch){const current=get(t.id);if(!current||current.projectId!==t.projectId||current.mediaRevision!==t.mediaRevision)throw Error('视频原件或品牌已变化，旧准备结果不会写回。');await ctx.save({...current,...patch});}
- async function status(t){if(!t.videoPreparation?.job)return {state:'not_started',next:'调用 zhigao_prepare_video_review。'};const result=await request({action:'status',...binding(t)});
+ function save(t,patch){
+  const operation=(writes.get(t.id)||Promise.resolve()).catch(()=>{}).then(async()=>{const current=get(t.id);if(!current||current.projectId!==t.projectId||current.mediaRevision!==t.mediaRevision)throw Error('视频原件或品牌已变化，旧准备结果不会写回。');await ctx.save({...current,...patch});});
+  writes.set(t.id,operation);return operation.finally(()=>{if(writes.get(t.id)===operation)writes.delete(t.id);});
+ }
+ function status(t){
+  const snapshot={...t,videoPreparation:t.videoPreparation&&structuredClone(t.videoPreparation)},key=JSON.stringify(binding(snapshot));
+  if(statusPending.has(key))return statusPending.get(key);
+  const operation=readStatus(snapshot).finally(()=>{if(statusPending.get(key)===operation)statusPending.delete(key);});statusPending.set(key,operation);return operation;
+ }
+ async function readStatus(t){if(!t.videoPreparation?.job)return {state:'not_started',next:'调用 zhigao_prepare_video_review。'};const result=await request({action:'status',...binding(t)});
   if(result.state==='complete'&&(!t.videoAnalysis||t.videoAnalysis.reportHash!==result.reportHash)){
    const report=await request({action:'result',...binding(t)});await save(t,{videoAnalysis:report,videoPreparation:{...t.videoPreparation,state:'complete',progress:result}});
   }else if(result.state!==t.videoPreparation.state||result.stage!==t.videoPreparation.progress?.stage)await save(t,{videoPreparation:{...t.videoPreparation,state:result.state,progress:result}});
