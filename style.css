@@ -30,7 +30,6 @@
 .modal:has(#connections-body) .modal-body{overflow:auto;min-height:0}
 .modal:has(#connections-body) .modal-header,.modal:has(#connections-body) .modal-footer{flex-shrink:0}
 .connect-intro{margin:0 0 8px;color:var(--muted);font-size:13px}
-.activity-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:24px;font-size:12px}.activity-bar label{display:flex;gap:8px;align-items:center}.activity-bar select{width:auto;max-width:260px}.activity-bar small{color:var(--muted)}
 .connect-start{padding:0 0 24px;margin-bottom:20px;border-bottom:1px solid var(--line);font-size:13px;line-height:1.8}.connect-start h3{font-size:18px;color:var(--ink);margin-bottom:8px}.connect-start p{color:var(--muted)}.connect-start .connect-actions{margin:16px 0}.connect-start textarea{width:100%;resize:vertical;min-height:150px;padding:12px;border:1px solid var(--line);border-radius:6px;font:inherit;line-height:1.7;background:var(--bg);color:var(--ink)}.connect-start .connect-note{margin-top:12px}
 .connect-intro-row{display:flex;align-items:center;justify-content:space-between;gap:12px}.connect-intro-row .connect-intro{margin:0}.connect-update{padding:16px 0;border-bottom:1px solid var(--line);font-size:13px;line-height:1.7}.connect-update p+p{margin-top:6px}.connect-update .connect-actions:has(button){margin:10px 0}.connect-update .connect-note{overflow-wrap:anywhere}
 .connect-row{border-bottom:1px solid var(--line);padding:24px 0}

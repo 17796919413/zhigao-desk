@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.15.0",
+  "version": "1.15.1",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
@@ -127,7 +127,7 @@
   },
   "autoUpdate": {
     "protocol": 1,
-    "sha256": "94325b570b59a58063763477e5c05ee3a52a175f695c0924b543ac61f29c0df7",
+    "sha256": "31a1e0c7542794da80369357115cddbe550991250f6130a2ff587eabe933edbb",
     "startup": true,
     "intervalHours": 6,
     "retryMinutes": 15,
@@ -136,7 +136,7 @@
   },
   "media": {
     "protocol": 1,
-    "version": "1.15.0",
+    "version": "1.15.1",
     "files": {
       "media-runtime.mjs": {
         "sha256": "c4bf79ff8767aa2392dc6c8b099290f745fac7b7aa446e21090e6bd78c835324",
@@ -156,7 +156,7 @@
     "semanticReview": "current-connected-agent"
   },
   "review": {
-    "protocolVersion": "1.15.0",
+    "protocolVersion": "1.15.1",
     "context": "Read each required brief.context section through nextCursor=null; reconstruct json-fragment records and block slices without truncation.",
     "checkpoint": "record_review_checks saves checks without completing review. Final explicit arrays replace saved arrays.",
     "basisChanges": "BASIS_CHANGED requires retry:true, updates pages and a fresh full review. Previous checks are advisory only.",

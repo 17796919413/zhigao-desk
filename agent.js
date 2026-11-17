@@ -61,7 +61,7 @@ const tools={
  zhigao_prepare_feishu_sync:(args={})=>ctx.prepareFeishuSync(args),
  zhigao_read_feishu_table:args=>ctx.readFeishuTable(args),
  zhigao_status({project}={}){const {settings,tasks,items}=S(),p=findProject(project),ownItems=items.filter(it=>it.projectId===p.id&&activityOf(it)===selectedActivity(p)),ownTasks=tasks.filter(t=>t.projectId===p.id&&activityOf(t)===selectedActivity(p));const by={};for(const it of ownItems){const pr=itemProgress(it,ownTasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.15.0',currentProject:p?.name||'',currentProjectId:p.id,currentActivityId:selectedActivity(p),currentActivity:activityName(p),projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:ownItems.length,documents:ownTasks.length,waiting:by,
+  return{connected:true,protocolVersion:'1.15.1',currentProject:p?.name||'',currentProjectId:p.id,currentActivityId:selectedActivity(p),currentActivity:activityName(p),projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:ownItems.length,documents:ownTasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id&&activityOf(b)===selectedActivity(p)).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
@@ -125,8 +125,8 @@ async function loop(signal,connection){
  let hello=true,wait=3000;
  while(!signal.aborted){
   const request=++connection.sequence,id=pageId;let controller;
-  try{pollAbort=new AbortController();controller=pollAbort;const onAbort=()=>controller.abort();signal.addEventListener('abort',onAbort,{once:true});const timer=setTimeout(onAbort,35000);let r;
-   try{r=await post('/page/poll',{pageId,title:document.title,hello,version:WEB_VERSION,tools:Object.keys(tools)},controller.signal);}finally{clearTimeout(timer);signal.removeEventListener('abort',onAbort);if(pollAbort===controller)pollAbort=null;}
+   try{pollAbort=new AbortController();controller=pollAbort;const onAbort=()=>controller.abort();signal.addEventListener('abort',onAbort,{once:true});const timer=setTimeout(onAbort,35000);let r;
+    try{r=await post('/page/poll',{pageId,projectId:S().settings.selected,title:document.title,hello,version:WEB_VERSION,tools:Object.keys(tools)},controller.signal);}finally{clearTimeout(timer);signal.removeEventListener('abort',onAbort);if(pollAbort===controller)pollAbort=null;}
    if(signal.aborted)break;
    hello=false;wait=3000;
    connection.success(r,id,request);
@@ -154,7 +154,7 @@ async function run(){
   success(r,id,request){
    if(signal.aborted||id!==pageId||request<this.settled)return;
    this.settled=request;this.failedAt=null;
-   set(r.clients?.length?'online':'waiting',{clients:r.clients||[],version:r.version||agent.version,error:null});
+    set(r.clients?.length?'online':'waiting',{clients:r.clients||[],version:r.version||agent.version,error:null,...(Object.hasOwn(r,'verification')?{verification:r.verification}:{})});
   },
   failure(error,request,id){
    // Neither late failures nor late successes may overwrite a newer response.
@@ -167,7 +167,7 @@ async function run(){
  const beat=async()=>{
   if(beating||signal.aborted)return;beating=true;
   const request=++connection.sequence,id=pageId;
-  try{const r=await post('/page/heartbeat',{pageId:id,activeCall},AbortSignal.timeout(8000));connection.success(r,id,request);}
+   try{const r=await post('/page/heartbeat',{pageId:id,projectId:S().settings.selected,activeCall},AbortSignal.timeout(8000));connection.success(r,id,request);}
   catch(error){
    if(error.status===404)clearInterval(heartbeat);
    else if(error.code==='PAGE_SESSION_CHANGED'){if(!signal.aborted&&!activeCall&&id===pageId)retryAbort?.abort();}
@@ -177,7 +177,7 @@ async function run(){
  const heartbeat=setInterval(beat,10000);
  const wake=()=>{if(signal.aborted)return;beat();retryAbort?.abort();if(!activeCall)pollAbort?.abort('wake');};wakeConnection=wake;
  const maintenance=setInterval(async()=>{if(maintaining||signal.aborted||agent.state!=='online')return;maintaining=true;try{await reviewService.maintainLeases();}catch(error){agent.log.unshift({at:new Date().toISOString(),label:'自动续租失败',ok:false,error:error.message});}finally{maintaining=false;}},60000);
- try{await reviewService.recover();await loop(signal,connection);}finally{clearInterval(heartbeat);clearInterval(maintenance);if(wakeConnection===wake)wakeConnection=null;running=false;if(signal.aborted){disconnectPage();if(agentWanted())queueMicrotask(startAgent);}}
+  try{await reviewService.recover();await loop(signal,connection);}finally{clearInterval(heartbeat);clearInterval(maintenance);if(wakeConnection===wake)wakeConnection=null;running=false;if(signal.aborted){disconnectPage(!agentWanted());if(agentWanted())queueMicrotask(startAgent);}}
 }
 
 let discovering=false;
@@ -194,10 +194,10 @@ export async function startAgent(){
  const got=await navigator.locks.request('zhigao-agent',{ifAvailable:true},async l=>{if(!l)return false;await run();return true;});
  if(got===false&&running){set('other-tab');try{await navigator.locks.request('zhigao-agent',{signal:lockAbort.signal},()=>run());}catch{running=false;}}
 }
-const disconnectPage=()=>{try{navigator.sendBeacon(HUB+'/page/disconnect',JSON.stringify({pageId}));}catch{}};
+const disconnectPage=(permanent=false)=>{try{navigator.sendBeacon(HUB+'/page/disconnect',JSON.stringify({pageId,permanent}));}catch{}};
 window.addEventListener('pagehide',()=>{pageHidden=true;lockAbort?.abort();abort?.abort();set('off');disconnectPage();});
 window.addEventListener('pageshow',()=>{if(pageHidden){pageHidden=false;discoverAgent();}});
-export function stopAgent(){remember(false);lockAbort?.abort();abort?.abort();if(!activeCall)disconnectPage();set('off',{clients:[]});}
+export function stopAgent(){remember(false);lockAbort?.abort();abort?.abort();if(!activeCall)disconnectPage(true);set('off',{clients:[]});}
 
 export const withReviewLock=fn=>reviewService?reviewService.exclusive(fn):fn();
 export const forgetReviews=(ids,projectIds)=>reviewService?.forget(ids,projectIds);

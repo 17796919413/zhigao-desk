@@ -1,6 +1,6 @@
 """Real isolated Edge + MCP connection lifecycle regressions, synthetic data only.
 
-Shortened poll/heartbeat intervals exercise races; not a multi-hour soak or OS sleep.
+Shortened poll/heartbeat/client-expiry intervals exercise races; not a multi-hour soak or OS sleep.
 Set ZHIGAO_CONNECTION_BASELINE=1 to test the committed pre-fix frontend.
 """
 import functools
@@ -54,7 +54,9 @@ home = OUT / 'isolated-home'
 home.mkdir(exist_ok=True)
 script = OUT / 'connector.mjs'
 source = (ROOT / 'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()', json.dumps(str(home)))
-script.write_text(source.replace('}, 25000)', '}, 600)').replace('pageStale:120000', 'pageStale:2500'), encoding='utf-8')
+script.write_text(source.replace('}, 25000)', '}, 600)').replace('pageStale:120000', 'pageStale:2500')
+                  .replace('now - c.seen > 90000', 'now - c.seen > 2000')
+                  .replace('}, 5000).unref();', '}, 200).unref();'), encoding='utf-8')
 env = {**os.environ, 'ZHIGAO_PORT': str(port), 'ZHIGAO_AUTO_UPDATE': '0', 'ZHIGAO_REGISTER_URI': '0', 'ZHIGAO_ORIGINS': origin}
 log = (OUT / 'connector.log').open('w', encoding='utf-8')
 hub = subprocess.Popen(['node', str(script), 'hub'], env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
@@ -255,19 +257,94 @@ def invitation_and_verified_project(page):
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
     assert page.evaluate('(async()=>{const {verifiedConnection}=await import("/connection-status.js");return verifiedConnection(a.agent,"wrong-project-id")})()') is False
     page.screenshot(path=str(OUT/'onboarding-verified.png'),full_page=True)
-    # Reload restores transport, but a prior document's verification is not fabricated.
+    # A real successful call stays verified across refresh while that client is live.
+    page.reload();page.wait_for_selector('#agent-chip')
+    page.evaluate("async()=>window.a=await import('/agent.js')")
+    online(page)
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=5000)
+    page.get_by_role('button', name='连接与授权', exact=True).click()
+    assert page.locator('[data-status="ai"]').inner_text() == 'AI 可用'
+    page.screenshot(path=str(OUT/'refresh-verified-desktop.png'),full_page=True)
+    page.set_viewport_size({'width':390,'height':844})
+    page.screenshot(path=str(OUT/'refresh-verified-narrow.png'),full_page=True)
+    assert page.evaluate("document.querySelector('#connections-body').scrollWidth<=document.querySelector('#connections-body').clientWidth")
+    page.set_viewport_size({'width':1440,'height':1000})
+
+
+def activity_toolbar_removed(page):
+    for tab in ['home', 'history', 'rules', 'feishu']:
+        page.locator(f'[data-page="{tab}"]').click()
+        assert page.locator('.activity-bar').count() == 0
+        assert page.locator('[data-action="new-activity"]').count() == 0
+    page.locator('[data-page="home"]').click()
+    page.screenshot(path=str(OUT/'activity-removed-desktop.png'),full_page=True)
+    page.set_viewport_size({'width':390,'height':844})
+    page.screenshot(path=str(OUT/'activity-removed-narrow.png'),full_page=True)
+
+
+def verification_project_scope(page):
+    reply=client.call('zhigao_status')
+    original=json.loads(reply['content'][0]['text'])['currentProjectId']
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+    page.locator('.navbtn[data-page="rules"]').click()
+    page.locator('[data-action="new-project"]').click()
+    page.locator('#new-project-name').fill('连接验证合成品牌乙')
+    page.locator('[data-action="create-project"]').click()
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('待验证')")
     page.reload();page.wait_for_selector('#agent-chip')
     page.evaluate("async()=>window.a=await import('/agent.js')")
     online(page)
     assert '待验证' in page.locator('#agent-chip').inner_text()
-    reply=client.call('zhigao_status',{'project':payload['currentProjectId']})
-    assert not reply.get('isError'),reply
+    assert client.call('zhigao_status', {'project':original}).get('isError')
+    assert '待验证' in page.locator('#agent-chip').inner_text()
+    page.locator('.navbtn[data-page="rules"]').click()
+    page.locator('[data-setting="project"]').select_option(original)
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
 
 
-CASES = [invitation_and_verified_project, wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
+def verification_explicit_disconnect(page):
+    assert not client.call('zhigao_status').get('isError')
+    page.evaluate('a.stopAgent()')
+    page.wait_for_timeout(250)
+    page.reload();page.wait_for_selector('#agent-chip')
+    page.evaluate("async()=>window.a=await import('/agent.js')")
+    page.wait_for_timeout(350)
+    assert page.evaluate('a.agent.state') == 'off'
+    page.evaluate('void a.startAgent()')
+    online(page)
+    assert '待验证' in page.locator('#agent-chip').inner_text()
+
+
+def verification_network_recovery(page):
+    assert not client.call('zhigao_status').get('isError')
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+    page.context.set_offline(True)
+    page.wait_for_function("a.agent.state==='reconnecting'")
+    assert not page.evaluate("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+    page.context.set_offline(False)
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+
+
+def verification_client_replacement(page):
+    global client
+    assert not client.call('zhigao_status').get('isError')
+    client.close();client=None
+    page.wait_for_function("a.agent.state==='waiting'", timeout=8000)
+    client=MCP(script,env,log,page)
+    online(page)
+    page.reload();page.wait_for_selector('#agent-chip')
+    page.evaluate("async()=>window.a=await import('/agent.js')")
+    online(page)
+    # Same display name, different client process: the old proof must not transfer.
+    assert '待验证' in page.locator('#agent-chip').inner_text()
+    assert not client.call('zhigao_status').get('isError')
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+
+
+CASES = [invitation_and_verified_project, activity_toolbar_removed, verification_project_scope, verification_explicit_disconnect, verification_network_recovery,
+         wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
          stopped_poll_cannot_reconnect, restored_page_session, multiple_tabs,
-         outage_and_recovery, suspended_transport_and_resume, hub_exit_and_client_takeover]
+         outage_and_recovery, suspended_transport_and_resume, verification_client_replacement, hub_exit_and_client_takeover]
 try:
     for _ in range(80):
         try:
