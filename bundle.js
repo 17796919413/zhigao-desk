@@ -9,6 +9,9 @@ function stripBuffers(doc,files){const d=structuredClone({...doc,buffer:null,rou
  d.brandFeedback=(doc.brandFeedback||[]).map((f,i)=>{const x={...f};if(f.originalAsset?.buffer){const p=`files/${doc.id}/feedback-${i}`;files.push([p,f.originalAsset.buffer]);x.originalAsset={...f.originalAsset,buffer:null,bufferPath:p};}return x;});if(doc.buffer){const p=`files/${doc.id}/current`;files.push([p,doc.buffer]);d.bufferPath=p;}d.rounds=(doc.rounds||[]).map((r,i)=>stripBuffers({...r,id:doc.id+'/round-'+(i+1),rounds:[]},files));return d;}
 async function verifyOffice(d){if(d.officeConversion&&(!d.officeOriginal?.buffer||!d.buffer||await digest(d.officeOriginal.buffer)!==d.officeConversion.sourceHash||await digest(d.buffer)!==d.officeConversion.convertedHash))throw Error('稿件 Office 原件与转换副本校验失败。');for(const r of d.rounds||[])await verifyOffice(r);}
 export async function makeBundle({projects,items,docs,media,note,libraryAssets=[]}){
+ const currentAssets=new Set(projects.flatMap(p=>(p.library||[]).map(d=>d.ingestion?.assetKey).filter(Boolean)));
+ libraryAssets=libraryAssets.filter(a=>currentAssets.has(a.id));
+ for(const key of currentAssets)if(!libraryAssets.some(a=>a.id===key))throw Error('品牌资料原件缺失，备份未生成。');
  for(const d of docs)await verifyOffice(d);
  const zip=new globalThis.JSZip(),files=[],out={kind:BUNDLE_KIND,version:BUNDLE_VERSION,created:new Date().toISOString(),note:note||'',projects:structuredClone(projects),items:structuredClone(items),docs:docs.map(d=>stripBuffers(d,files)),media:[],libraryAssets:[],projectHashes:{}};
  for(const p of projects)out.projectHashes[p.id]=await digest(stableJSON(p));

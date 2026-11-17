@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {reviewReportHtml,reviewNeedsAttention,reviewWarnings} from '../review-summary.js';
+import {reviewReportHtml,reviewNeedsAttention,reviewWarnings,mediaOpinionsText,mediaOpinionEntries} from '../review-summary.js';
 const checks=[],check=(name,fn)=>{fn();checks.push(name);console.log('PASS '+name);};
 const project={date:'2026-11-10T10:00:00Z'};
 const base={filename:'合成视频.mp4',fmt:'video',projectName:'隔离测试品牌',remarks:[]};
@@ -10,4 +10,15 @@ check('Changed brand basis is shown in report',()=>{assert.equal(reviewNeedsAtte
 check('Read-only media report retains warnings and suggested text',()=>{const html=reviewReportHtml({...base,ai:{...ai,warnings:['2秒画面与口径冲突'],changes:[{id:'asr:0:0:0',original:'完全无异味',revised:'<script>示例</script>',reason:'需改原片'}]}},project);assert.match(html,/原文件未修改/);assert.match(html,/2秒画面与口径冲突/);assert.match(html,/修改建议/);assert.match(html,/&lt;script&gt;/);assert.doesNotMatch(html,/<script>/);});
 check('Completed review uses the existing concise status',()=>{assert.match(reviewReportHtml({...base,ai},project),/已审稿/);});
 check('Internal assurance and processing notes never appear in user reports',()=>{const task={...base,ai:{...ai,warnings:['具体修改意见','缺少凭据','低置信处理过程'],blockingWarnings:['缺少凭据'],processingWarnings:['低置信处理过程']}};assert.deepEqual(reviewWarnings(task),['具体修改意见']);assert.doesNotMatch(reviewReportHtml(task,project),/覆盖|sha256|receipt|凭据|低置信|逐项证据/);});
+check('媒体复制与导出使用同一位置问题；可选建议独立且不误报无意见',()=>{const t={...base,cells:[{id:'c',address:'段落1'}],ai:{...ai,mediaOpinions:[{assetId:'a',location:'第2页',problem:'产品名称与当前资料不一致<script>'}],optionalSuggestions:[{id:'c',suggestion:'可以更简短',reason:'仅表达建议'}]}};const html=reviewReportHtml(t,project);assert.equal(mediaOpinionsText(t),'第2页：产品名称与当前资料不一致<script>');assert.match(html,/第2页/);assert.match(html,/产品名称与当前资料不一致&lt;script&gt;/);assert.match(html,/未写入修改稿/);assert.doesNotMatch(html,/暂无修改意见/);});
+check('旧媒体意见只恢复已审原件且有确切位置的发现，不猜页码或引用反馈资料',()=>{
+ const original={fmt:'pdf',pages:[{n:2}],ai:{...ai,warnings:['PDF第2页：名称错误','PDF第9页：虚构页码','品牌资料「旧表」 · PDF第2页：资料问题'],assurance:{...ai.assurance,mediaChecks:[{assetId:'page:2',receipt:'stored',status:'reviewed',findings:['名称错误']},{assetId:'page:9',receipt:'stored',status:'reviewed',findings:['虚构页码']},{assetId:'library:l|page:2',receipt:'stored',status:'reviewed',findings:['资料问题']}]}}};
+ const before=structuredClone(original);assert.equal(mediaOpinionsText(original),'PDF第2页：名称错误');assert.deepEqual(original,before);
+ assert.deepEqual(reviewWarnings(original),['PDF第9页：虚构页码','品牌资料「旧表」 · PDF第2页：资料问题']);
+ assert.equal(reviewReportHtml(original,project).split('名称错误').length-1,1);
+ assert.equal(mediaOpinionsText({...original,pages:[]}), '');
+ const both={...original,ai:{...original.ai,mediaOpinions:[{assetId:'page:2',location:'PDF第2页',problem:'名称错误'}]}};assert.equal(mediaOpinionEntries(both).length,1);
+ const video={fmt:'video',videoAnalysis:{assets:[{id:'frame-a',location:'画面 125.200 秒'}]},ai:{warnings:['画面 125.200 秒：字幕错误'],assurance:{mediaChecks:[{assetId:'frame-a',status:'reviewed',receipt:'stored',findings:['字幕错误']}]}}};assert.equal(mediaOpinionsText(video),'画面 125.200 秒：字幕错误');
+ video.ai.assurance.mediaChecks[0].status='uncertain';assert.equal(mediaOpinionsText(video),'');
+});
 console.log(JSON.stringify({total:checks.length,checks}));

@@ -10,6 +10,7 @@ const temp=fs.mkdtempSync(path.join(os.tmpdir(),'zhigao-media-runtime-'));
 const runtime=path.join(temp,'private'),checks=[];
 process.env.ZHIGAO_MEDIA_HOME=runtime;
 fs.copyFileSync(path.join(source,'media-runtime.mjs'),path.join(temp,'media-runtime.mjs'));
+fs.copyFileSync(path.join(source,'cache-cleanup.mjs'),path.join(temp,'cache-cleanup.mjs'));
 fs.writeFileSync(path.join(temp,'media-worker.py'),String.raw`import argparse,sys,json,time,hashlib,wave
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('command');p.add_argument('--model');p.add_argument('--model-path');p.add_argument('--cache');p.add_argument('--input');p.add_argument('--out');a=p.parse_args()

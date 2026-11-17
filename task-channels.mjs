@@ -10,6 +10,16 @@ export function createTaskChannels(host, {createTaskRuntime, createChannelRuntim
   const issue = (id, code, message, userAction) => ({id, code, state: 'waiting_for_user', message, userAction: userAction || {kind: id, message}});
   const need = (id, action, message, fingerprint) => ({id, state: 'needs_confirmation', action, message, fingerprint});
   const authFile = id => path.join(root, 'auth', id + '.json');
+  const scopeFile = id => path.join(root,'auth','scope-'+crypto.createHash('sha256').update(id).digest('hex')+'.json');
+  function pendingScopes(browser,status){
+    const demand=browser.scopeRequest;
+    if(!demand||typeof demand.id!=='string'||!Array.isArray(demand.scopes))return null;
+    const scopes=[...new Set(demand.scopes.filter(s=>typeof s==='string'&&/^[a-z][a-z0-9_:.]{1,150}$/.test(s)))].slice(0,20);
+    if(!scopes.length)return null;
+    let receipt;try{receipt=JSON.parse(fs.readFileSync(scopeFile(demand.id),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
+    if(receipt?.fingerprint===browser.binding.fingerprint&&receipt?.account===status.accountFingerprint&&JSON.stringify(receipt.scopes)===JSON.stringify(scopes))return null;
+    return {...need('feishu','authorize_feishu',browser.continuationAction==='feishuSync'?'需要补充飞书权限。授权后继续同步这份稿件。':'需要补充飞书权限。授权后继续刚才的表格操作。','lark-scopes-'+demand.id),scopes};
+  }
   async function inspect(request) {
     let browser;
     try { browser = await host.pageCall('zhigao_task_context', request); }
@@ -36,13 +46,13 @@ export function createTaskChannels(host, {createTaskRuntime, createChannelRuntim
         const status = await host.feishuStatus();
         if(status.state==='ready')guards.feishu=JSON.stringify([host.larkCommand().file,status.accountFingerprint||null]);
         if (status.state === 'ready') {
-          try { await host.inspectTable(browser.tableUrl); requirements.push({id: 'feishu', state: 'ready', verified: 'target-workbook-read'}); }
+          try { await host.inspectTable(browser.tableUrl); requirements.push(pendingScopes(browser,status)||{id: 'feishu', state: 'ready', verified: 'target-workbook-read'}); }
           catch (e) {
             if(e.code==='FEISHU_SCOPE')requirements.push({...need('feishu','authorize_feishu','当前账号尚未授予目标表所需权限。要发起补充授权，并在完成后继续吗？','lark-scopes-'+JSON.stringify(e.details?.missingScopes||[])),scopes:e.details?.missingScopes||[]});
             else requirements.push(issue('feishu', e.code || 'FEISHU_ACCESS', '当前账号无法读取目标表。请检查链接、表格权限和网络。', {kind: 'table-access', url: browser.tableUrl, message: '请用当前账号打开目标表；缺权限请向所有者申请，链接失效请重新关联。'}));
           }
         } else if (['missing', 'config', 'auth', 'scope'].includes(status.state) && LARK_HASHES[process.platform + '-' + process.arch]) {
-          requirements.push(need('feishu', 'prepare_feishu', '读取本任务的飞书表需要准备连接组件、应用配置及用户授权。缺失组件将放入知稿私有目录，登录或管理员许可由你在飞书完成；随后回读目标表并继续，不会自动写表。要现在准备吗？', 'lark-' + LARK_VERSION));
+          requirements.push(need('feishu', 'prepare_feishu', (status.state==='auth'?'需要登录飞书。':status.state==='config'?'需要完成飞书应用配置。':'需要在知稿私有目录准备飞书连接组件，并完成授权。')+(browser.continuationAction&&browser.continuationAction!=='gridRead'?'授权后继续刚才的表格操作。':'授权后继续读取这张表。'), 'lark-' + LARK_VERSION));
         } else requirements.push(issue('feishu', status.code || 'FEISHU_UNAVAILABLE', '飞书渠道暂不可用，请检查网络、应用或系统支持情况。'));
       }
     }
@@ -104,7 +114,7 @@ export function createTaskChannels(host, {createTaskRuntime, createChannelRuntim
   async function prepare(requirement, p, progress) {
     if (requirement.action === 'prepare_media') return host.prepareMedia(p.request.mediaModel ? {model:p.request.mediaModel} : {});
     if (requirement.action === 'prepare_office') return channels.installOffice(progress);
-    if (requirement.action === 'prepare_feishu') return prepareFeishu(p, progress);
+    if (requirement.action === 'prepare_feishu') return prepareFeishu(p, progress,(await host.pageCall('zhigao_task_context',p.request)).scopeRequest?.scopes);
     if (requirement.action === 'authorize_feishu') return prepareFeishu(p,progress,requirement.scopes||[]);
     throw Object.assign(Error('未知准备动作。'), {code: 'INVALID_ACTION'});
   }
@@ -112,7 +122,15 @@ export function createTaskChannels(host, {createTaskRuntime, createChannelRuntim
     if (p.userAction?.kind === 'feishu-login') {
       let auth; try { auth = JSON.parse(fs.readFileSync(authFile(p.id), 'utf8')); } catch { return prepareFeishu(p, () => {}); }
       if (auth.expiresAt <= Date.now()) { fs.unlinkSync(authFile(p.id)); return prepareFeishu(p, () => {},auth.scopes); }
-      await host.larkJson(['auth', 'login', '--device-code', auth.deviceCode]); fs.unlinkSync(authFile(p.id));
+      await host.larkJson(['auth', 'login', '--device-code', auth.deviceCode]);
+      // A completed device grant is only permission to retry the exact blocked
+      // operation. The resumed operation still proves actual write capability.
+      const report=await host.pageCall('zhigao_task_context',p.request),demand=report.scopeRequest;
+      if(demand&&auth.scopes?.length&&report.binding.fingerprint===p.binding.fingerprint&&JSON.stringify(auth.scopes)===JSON.stringify(demand.scopes)){
+        const status=await host.feishuStatus();
+        if(status.state==='ready')fs.writeFileSync(scopeFile(demand.id),JSON.stringify({fingerprint:report.binding.fingerprint,account:status.accountFingerprint,scopes:auth.scopes}),{mode:0o600});
+      }
+      fs.unlinkSync(authFile(p.id));
     }
     if (p.userAction?.kind === 'feishu-config') {
       if (configJobs.has(p.id)) return beginConfig(p);

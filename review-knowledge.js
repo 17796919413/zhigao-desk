@@ -60,7 +60,7 @@ export function inspectFactConflicts(manifest,cells){
 function brandInput(project){return {compiler:KNOWLEDGE_VERSION,projectId:project.id,projectName:project.name,notes:project.notes||'',rules:effectiveRules(project).map(r=>({id:r.id,title:r.title,description:r.description||'',type:r.type,find:r.find||'',replace:r.replace||'',action:r.action||'check',source:r.source||'',updated:r.updated||'',supersedes:r.supersedes||[]})),library:(project.library||[]).filter(d=>d.active!==false).map((d,i)=>({id:d.id||String(i),kind:d.kind,title:d.title,text:String(d.text||''),ingestion:d.ingestion||null,source:d.source||'',updated:d.updated||''}))};}
 export function createKnowledgeCache({load,save}={}){
  const memory=new Map();
- return async project=>{
+ const compile=async project=>{
   const input=brandInput(project),inputHash=await digest(stableJSON(input));let cached=memory.get(project.id),origin='memory';
   if(!cached&&load){try{cached=await load(project.id);origin='persistent';}catch{}}
   if(cached?.compiler===KNOWLEDGE_VERSION&&cached.inputHash===inputHash&&cached.data?.projectId===project.id&&cached.dataHash===await digest(stableJSON(cached.data))){memory.set(project.id,cached);return {...structuredClone(cached.data),cache:{hit:true,origin}};}
@@ -71,4 +71,6 @@ export function createKnowledgeCache({load,save}={}){
   let persisted=false;if(save)try{await save(project.id,structuredClone(cached));persisted=true;}catch{}
   return {...structuredClone(data),cache:{hit:false,origin:'compiled',persisted}};
  };
+ compile.clear=id=>memory.delete(id);
+ return compile;
 }

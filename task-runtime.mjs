@@ -1,5 +1,6 @@
 // Persistent capability plans. This module is embedded in the standalone connector at build time.
 import fs from 'node:fs';
+import {cleanupManifest,cleanupError,assertCachePath} from './cache-cleanup.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -41,6 +42,25 @@ export function taskError(e) {
 export function createTaskRuntime({root, version, inspect, prepare, verify, resume, userAction, now = Date.now, bootTime = () => Date.now() - os.uptime()*1000}) {
   const jobs = path.join(root, 'tasks'), writer = path.join(root, 'preparation.lock');
   const operations = new Map(), resumptions = new Map(), unsaved = new Map();
+  function cleanupLibrary(value){
+    const manifest=cleanupManifest(value),cleared=[];
+    if(!fs.existsSync(jobs))return {cleared};
+    for(const name of fs.readdirSync(jobs)){
+      if(!/^[a-f0-9-]{36}\.json$/.test(name))continue;
+      assertCachePath(jobs,path.join(jobs,name));const p=read(name.slice(0,-5));
+      if(p.binding?.projectId!==manifest.projectId||!['review','library','office'].includes(p.request.operation))continue;
+      const scope=manifest.scopes.find(s=>s.activityId===(p.binding.activityId||'legacy'));
+      if(!scope||p.binding.libraryIdentity===scope.identity)continue;
+      if(operations.has(p.id)||resumptions.has(p.id)||runningStates.has(p.state)||unsaved.has(p.id))throw cleanupError('CLEANUP_BUSY');
+      for(const key of ['result','proof','continuation','progress','userAction','consent'])delete p[key];
+      // Preserve unresolved operation identity and lock: erasure never grants replay permission.
+      if(p.state!=='uncertain'&&p.stage!=='resume')p.state='cancelled';
+      else p.state='uncertain';
+      p.cancelRequested=true;p.libraryRetired=true;p.error={code:'BASIS_CHANGED',message:'准备任务使用的品牌资料已更新，请重新读取当前依据；结果不明的原调用仍须核对。'};
+      save(p);cleared.push(p.id);
+    }
+    return {cleared};
+  }
   function save(p) {
     fs.mkdirSync(jobs, {recursive: true});
     p.updatedAt = now();
@@ -67,7 +87,7 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
       operation: p.request.operation, binding: p.binding, requirements: p.requirements,
       confirmation: p.state === 'awaiting_confirmation' ? {planId: p.id, revision: p.revision, expiresAt: p.expiresAt,
         message: p.requirements.filter(r => r.state === 'needs_confirmation').map(r => r.message).join(' '),
-        scope: '仅准备本任务所需渠道；不包含云端业务写入、采纳、通过或外发。'} : null,
+        scope: p.request.originalCall?.args?.continuationId?'准备本任务所需渠道后，按原范围继续先前的表格操作；不授权其他写入。':'仅准备本任务所需渠道；不包含云端业务写入、采纳、通过或外发。'} : null,
       ...(p.error ? {error: unknownOriginal?{...p.error,message:'原任务调用已发出，但结果尚未确认。请核对已保存的稿件与审稿进度；停止后续步骤不会撤销已执行的操作，不会自动重做。'}:p.error} : {}), ...(p.result ? {result: p.result} : {}),
       ...(p.userAction ? {userAction: p.userAction} : {}),
       cancelRequested: !!p.cancelRequested, createdAt: p.createdAt, updatedAt: p.updatedAt,
@@ -105,13 +125,15 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
       safe.mediaModel = request.mediaModel;
     }
     if(request.originalCall){
-      const allowed={zhigao_get_review_brief:['docId','batchId','retry','rereview'],zhigao_reopen_review:['docId','batchId'],zhigao_prepare_video_review:['docId','retry'],zhigao_prepare_library_assets:['libraryId','retry'],zhigao_extract_feishu:['url','title','createDocument'],zhigao_read_feishu_table:['url'],zhigao_prepare_feishu_sync:[]};
+      const allowed={zhigao_get_review_brief:['docId','batchId','retry','rereview'],zhigao_reopen_review:['docId','batchId'],zhigao_prepare_video_review:['docId','retry'],zhigao_prepare_library_assets:['libraryId','retry'],zhigao_extract_feishu:['url','title','createDocument'],zhigao_read_feishu_table:['url','continuationId'],zhigao_prepare_feishu_sync:['docId','url','continuationId']};
       const fields=allowed[request.originalCall.name];if(!fields)throw fail('INVALID_TASK','原任务入口无效。');
       const args={};for(const field of fields){const value=request.originalCall.args?.[field];if(value===undefined)continue;if(['retry','rereview','createDocument'].includes(field)){if(typeof value!=='boolean'||field==='createDocument'&&value)throw fail('INVALID_TASK');}else if(typeof value!=='string'||value.length>2000)throw fail('INVALID_TASK');args[field]=value;}
       const operation={zhigao_get_review_brief:'office',zhigao_reopen_review:'office',zhigao_prepare_video_review:'office',zhigao_prepare_library_assets:'library',zhigao_extract_feishu:'feishu_read',zhigao_read_feishu_table:'feishu_read',zhigao_prepare_feishu_sync:'feishu_sync'}[request.originalCall.name];
       if(request.operation!==operation)throw fail('INVALID_TASK','原调用与准备类型不一致。');
       for(const key of ['docId','libraryId'])if(args[key]!==request[key])throw fail('INVALID_TASK','原调用与准备对象不一致。');
       if(['zhigao_get_review_brief','zhigao_reopen_review','zhigao_prepare_video_review'].includes(request.originalCall.name)&&!args.docId)throw fail('INVALID_TASK','原调用缺少稿件标识。');
+      if(args.continuationId&&!idPattern.test(args.continuationId))throw fail('INVALID_TASK','续办标识无效。');
+      if(request.originalCall.name==='zhigao_prepare_feishu_sync'&&Object.keys(args).length&&(!args.continuationId||!args.docId||!args.url))throw fail('INVALID_TASK','单稿续办缺少原稿件或表格标识。');
       safe.originalCall={name:request.originalCall.name,args};
     }
     for (const key of ['projectId', 'docId', 'libraryId']) if (request[key] !== undefined) {
@@ -290,6 +312,6 @@ export function createTaskRuntime({root, version, inspect, prepare, verify, resu
     }
     return null;
   }
-  return {plan, confirm, resume: resumeTask, recover, cancel, findOriginal, status: ({taskId}) => view(read(taskId)),
+  return {plan, confirm, resume: resumeTask, recover, cancel, findOriginal,cleanupLibrary,status: ({taskId}) => view(read(taskId)),
     busy: () => operations.size > 0, wait: id => operations.get(id)};
 }

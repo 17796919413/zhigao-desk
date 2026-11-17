@@ -1,18 +1,20 @@
 // Completion checks coverage and grounded evidence, not semantic infallibility.
 import {effectiveRules} from './brand.js';
 import {feedbackFor} from './draft-feedback.js';
+import {activityOf,projectForActivity} from './activities.js';
 import {scan} from './engine.js';
 import {stableJSON,digest,sourceUnits,createKnowledgeCache,inspectFactConflicts} from './review-knowledge.js';
 export {stableJSON,digest} from './review-knowledge.js';
 export const ASSURANCE_VERSION='1.12.0';
 const defaultKnowledge=createKnowledgeCache();
 export async function buildBasisManifest(task,project,knowledge=defaultKnowledge){
+ project=projectForActivity(project,activityOf(task));
  const brand=await knowledge(project),sources=[...brand.sources];
  if(task.projectId!==project.id)throw Object.assign(Error('稿件与品牌项目不一致。'),{code:'PROJECT_MISMATCH'});
  for(const f of feedbackFor(task))sources.push(...sourceUnits('draft-feedback:'+f.id,'feedback',f.title,f.text,{ingestion:f.ingestion||null}));
- for(const [i,f] of (task.flow?.feedback||[]).entries())sources.push(...sourceUnits('feedback:'+i,'feedback','第'+(f.round||1)+'轮品牌原话',f.text));
- for(const [i,f] of (task.fbItems||[]).entries())if(f.status!=='draft')sources.push(...sourceUnits('feedback-item:'+(f.id||i),'feedback-item','反馈条目（'+f.status+'）',f.text,{status:f.status,note:f.note||'',advisoryOnly:f.status==='dropped'}));
- const value={schemaVersion:ASSURANCE_VERSION,projectId:project.id,projectName:project.name,rules:brand.rules,sources},hash=await digest(stableJSON(value));
+ for(const [i,f] of (task.flow?.feedback||[]).entries())if((f.round||1)===(task.flow?.round||1))sources.push(...sourceUnits('feedback:'+i,'feedback','第'+(f.round||1)+'轮品牌原话',f.text));
+ for(const [i,f] of (task.fbItems||[]).entries())if((f.round||1)===(task.flow?.round||1)&&f.status!=='draft')sources.push(...sourceUnits('feedback-item:'+(f.id||i),'feedback-item','反馈条目（'+f.status+'）',f.text,{status:f.status,note:f.note||'',advisoryOnly:f.status==='dropped'}));
+ const value={schemaVersion:ASSURANCE_VERSION,projectId:project.id,projectName:project.name,activityId:activityOf(task),activityName:project.activityName,rules:brand.rules,sources},hash=await digest(stableJSON(value));
  return {...value,version:hash.slice(0,16),hash,cache:brand.cache,sourceRevision:brand.sourceRevision,hasBrandBasis:brand.rules.length>0||sources.some(s=>s.kind!=='notes')};
 }
 export function assuranceInstruction(manifest){return [
@@ -31,6 +33,7 @@ export function assuranceInstruction(manifest){return [
  '事实机械检查只使用当前原文中的明确断言，不能替代语义审阅。未知、歧义、例外或不支持的画面如实报告；最终仍待人工确认。'
  ].join(String.fromCharCode(10));}
 export function validateReviewAssurance(data,task,project,parsed,manifest,media={assets:[],blockers:[]},receipts={}){
+ project=projectForActivity(project,activityOf(task));
  const blockingWarnings=[],warnings=[],diagnostics=[],valid=(x)=>typeof x==='string'&&!!x.trim();
  const substantive=x=>valid(x)&&x.trim().length>=8&&!/^(?:已核对|已经核对|全部已审|符合要求|没有问题|无问题|不适用|read|checked|done)[。.!！\s]*$/i.test(x.trim());
  const groundedQuote=(quote,text)=>valid(quote)&&text.includes(quote)&&quote.trim().length>=Math.min(16,text.trim().length);

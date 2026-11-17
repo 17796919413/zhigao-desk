@@ -224,7 +224,48 @@ def multiple_tabs(page):
     other.close()
 
 
-CASES = [wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
+def invitation_and_verified_project(page):
+    # Initialized MCP/heartbeats alone must not count as successful project access.
+    assert '待验证' in page.locator('#agent-chip').inner_text()
+    page.get_by_role('button', name='连接与授权', exact=True).click()
+    button = page.get_by_role('button', name='复制网址和接入指令', exact=True)
+    assert button.is_visible()
+    page.evaluate("()=>{navigator.clipboard.writeText=async value=>window.copiedInvitation=value}")
+    button.click()
+    copied = page.evaluate('window.copiedInvitation')
+    assert origin in copied and 'AGENT_SETUP.md' in copied and 'zhigao_status({project:' in copied
+    assert not page.locator('#connect-cmd-connector').is_visible()
+    page.screenshot(path=str(OUT/'onboarding-desktop.png'),full_page=True)
+    page.set_viewport_size({'width':390,'height':844})
+    page.screenshot(path=str(OUT/'onboarding-narrow.png'),full_page=True)
+    assert page.evaluate("document.querySelector('#connections-body').scrollWidth<=document.querySelector('#connections-body').clientWidth")
+    # Clipboard denial selects the actual instruction for manual copying.
+    page.evaluate("()=>{navigator.clipboard.writeText=async()=>{throw Error('synthetic clipboard denied')}}")
+    button.click()
+    assert page.locator('#connect-invitation').is_visible()
+    assert page.evaluate("document.querySelector('#connect-invitation').selectionEnd") > 0
+    page.set_viewport_size({'width':1440,'height':1000})
+    reply=client.call('zhigao_status', {'project':'wrong-project-id'})
+    assert reply.get('isError')
+    assert page.evaluate('a.agent.verification') is None
+    reply=client.call('zhigao_status')
+    assert not reply.get('isError'), reply
+    payload=json.loads(reply['content'][0]['text'])
+    assert payload['currentProjectId']
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+    assert page.evaluate('(async()=>{const {verifiedConnection}=await import("/connection-status.js");return verifiedConnection(a.agent,"wrong-project-id")})()') is False
+    page.screenshot(path=str(OUT/'onboarding-verified.png'),full_page=True)
+    # Reload restores transport, but a prior document's verification is not fabricated.
+    page.reload();page.wait_for_selector('#agent-chip')
+    page.evaluate("async()=>window.a=await import('/agent.js')")
+    online(page)
+    assert '待验证' in page.locator('#agent-chip').inner_text()
+    reply=client.call('zhigao_status',{'project':payload['currentProjectId']})
+    assert not reply.get('isError'),reply
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+
+
+CASES = [invitation_and_verified_project, wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
          stopped_poll_cannot_reconnect, restored_page_session, multiple_tabs,
          outage_and_recovery, suspended_transport_and_resume, hub_exit_and_client_takeover]
 try:

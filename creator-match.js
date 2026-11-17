@@ -1,5 +1,6 @@
 // 只以昵称精确匹配；不把相似昵称、正文提到的其他达人自动当成作者。
-import {cellOf,kindOf,platformsOf,rowKey} from './feishu.js';
+import {cellOf,kindOf,platformsOf,rowKey,rowInActivity,activityColumns,activityMappingError} from './feishu.js';
+import {activityOf,selectedActivity} from './activities.js';
 export const creatorKey=s=>String(s||'').normalize('NFKC').trim().replace(/^@/,'').toLowerCase();
 export function contentKey(title,author=''){let value=creatorKey(title).replace(/\.[a-z0-9]+$/i,'').replace(/[【\[][^】\]]+[】\]]/g,'');if(author)value=value.replaceAll(creatorKey(author),'');return value.replace(/(?:大纲|脚本|初稿|图文|视频|小红书|抖音)/g,'').replace(/(?:第\s*\d+\s*[轮版]|v\s*\d+(?:\.\d+)*|[（(]?\d+版[）)]?)/gi,'').replace(/[\s_\-—·（）()]/g,'');}
 export function creatorEvidence(doc){
@@ -8,7 +9,8 @@ export function creatorEvidence(doc){
  const names=[...text.matchAll(/(?:^|\n)\s*(?:达人(?:ID|名称|昵称|账号)?|博主(?:名称|昵称)?|账号(?:名称)?|作者)(?:\s*[:：]\s*|\s*\n\s*)([^\r\n]+)/gi)].map(m=>m[1].trim());
  const filename=String(doc.filename||'').replace(/\.[^.]+$/,'');
  names.push(...[...filename.matchAll(/[【\[]([^】\]]+)[】\]]/g)].map(m=>m[1]),...filename.split(/[-_—]/));
- const platforms=[...new Set((filename+'\n'+text.slice(0,1000)).match(/抖音|小红书/g)||[])];
+ const platformLabels=[...text.matchAll(/(?:^|\n)\s*(?:平台|发布平台)\s*[:：]\s*([^\r\n]+)/g)].map(m=>m[1]).join('\n');
+ const platforms=[...new Set((filename+'\n'+platformLabels).match(/抖音|小红书/g)||[])];
  const contentTitle=text.match(/(?:^|\n)\s*内容标题\s*[:：]\s*([^\r\n]+)/)?.[1]?.trim()||text.match(/(?:^|\n)\s*(?:合作产品|产品名称)\s*[:：]\s*([^\r\n]+)/)?.[1]?.trim()||'';
  return {names:[...new Set(names.map(creatorKey).filter(Boolean))],contentTitle,filename:creatorKey(filename),platform:platforms.length===1?platforms[0]:'',stage:filename.match(/大纲|脚本|初稿/)?.[0]||''};
 }
@@ -22,12 +24,33 @@ export function matchUploadedCreator(doc,items){
  if(hits.length&&contentKey(title,hits[0].author))return {status:'unmatched',hits:[],evidence:e};
  return {status:hits.length?'ambiguous':'unmatched',hits,evidence:e};
 }
-export function exactCreatorRows(item,sheets){
+export function exactCreatorRows(item,sheets,project){
  if(!creatorKey(item.author))return [];
  let hits=sheets.flatMap(s=>s.rows.map((r,row)=>({s,row,r})).filter(({r})=>creatorKey(cellOf(r,s.map,'author'))===creatorKey(item.author)));
  if(item.platform)hits=hits.filter(({s,r})=>s.map.platform<0||platformsOf(cellOf(r,s.map,'platform')).includes(item.platform));
+ if(project)hits=hits.filter(({s,row})=>rowInActivity(item,s,row,project));
+ // An explicit activity does not make a different content title the same task.
+ if(project&&item.title)hits=hits.filter(({s,r})=>!activityColumns(s).length||!(s.map.title>=0)||creatorKey(cellOf(r,s.map,'title'))===creatorKey(item.title));
  if(hits.length>1&&item.title){const exact=hits.filter(({s,r})=>creatorKey(cellOf(r,s.map,'title'))===creatorKey(item.title));if(exact.length)hits=exact;}
  return hits;
+}
+// A brand-level sheet cannot disambiguate two activities by creator nickname alone.
+export function activityRowMatch(item,items,sheets,project){
+ const issues=[];
+ for(const s of sheets){const columns=activityColumns(s),error=activityMappingError(s);if(error)issues.push(`${s.name||s.id}：${error}`);else if(columns.length&&(!project||columns.length>1||s.map?.activity!==columns[0]))issues.push(`${s.name||s.id} 的活动列不明确，请核对表头和当前品牌。`);}
+ const hits=issues.length?[]:exactCreatorRows(item,sheets,project),keys=new Set(hits.map(({s,row})=>s.id+'|'+rowKey(s,row)));
+ const conflicts=items.filter(other=>other.id!==item.id&&other.projectId===item.projectId&&activityOf(other)!==activityOf(item)&&(
+  other.feishu&&keys.has(other.feishu.sheetId+'|'+other.feishu.key)&&hits.some(({s,row})=>s.id===other.feishu.sheetId&&rowKey(s,row)===other.feishu.key&&(!project||rowInActivity(other,s,row,project)))||exactCreatorRows(other,sheets,project).some(({s,row})=>keys.has(s.id+'|'+rowKey(s,row)))));
+ return {hits,conflicts,issues};
+}
+export function activityMappingSheets(project,items,sheets){
+ const mine=items.filter(i=>i.projectId===project.id&&activityOf(i)===selectedActivity(project));
+ return sheets.filter(s=>{
+  const columns=activityColumns(s);
+  if(activityMappingError(s)||columns.length>1||columns.length===1&&s.map?.activity!==columns[0])return true;
+  if(columns.length)return false;
+  return mine.some(it=>{const {hits,conflicts}=activityRowMatch(it,items,[s],project);return hits.length>1||hits.length>0&&conflicts.length>0;});
+ });
 }
 export function tasksFromSheets(sheets){return sheets.flatMap(s=>s.rows.flatMap((r,row)=>{
  const author=cellOf(r,s.map,'author'),ps=platformsOf(cellOf(r,s.map,'platform'));

@@ -26,7 +26,7 @@ export function createVideoProcessor(ctx){
   if(pending.has(t.id))return {state:'processing',next:'查询 zhigao_get_video_review_status。'};
   if(t.videoPreparation?.job){const current=await status(t);if(current.state==='complete')return current;if(['failed','interrupted'].includes(current.state)){if(!retry)return current;await request({action:'retry',...binding(t)});return {state:'queued'};}if(current.state!=='uploading')return current;}
   const blob=await ctx.getMediaFile(t.id)||t.originalFile;if(!(blob instanceof Blob))throw Error('本机没有该视频原件，请在工作台重新关联原视频。');
-  if(!t.videoPreparation?.job){const started=await request({action:'begin',docId:t.id,projectId:t.projectId,revision:t.mediaRevision,size:blob.size});if(started.state==='setup_required')return started;await save(t,{videoPreparation:{state:'uploading',job:{jobId:started.jobId,jobToken:started.jobToken}}});t=get(t.id);}
+  if(!t.videoPreparation?.job){const started=await request({action:'begin',docId:t.id,projectId:t.projectId,revision:t.mediaRevision,size:blob.size,...(t.libraryAssetKey?{libraryAssetKey:t.libraryAssetKey}:{})});if(started.state==='setup_required')return started;await save(t,{videoPreparation:{state:'uploading',job:{jobId:started.jobId,jobToken:started.jobToken}}});t=get(t.id);}
   const original=t;
   const operation=(async()=>{let progress=await request({action:'status',...binding(original)}),offset=progress.received||0;
    while(offset<blob.size){const bytes=await blob.slice(offset,offset+512*1024).arrayBuffer(),result=await request({action:'chunk',...binding(original),offset,data:b64(bytes)});offset=result.received;}

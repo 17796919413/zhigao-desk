@@ -14,7 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / 'zhigao-connector.mjs').read_text(encoding='utf-8')
-NAMES = ['media-runtime.mjs', 'media-worker.py']
+NAMES = ['media-runtime.mjs', 'media-worker.py', 'cache-cleanup.mjs']
 
 
 class AddonTests(unittest.TestCase):
@@ -137,7 +137,7 @@ class AddonTests(unittest.TestCase):
     def test_release_generator_binds_lf_bytes_and_is_idempotent(self):
         project = self.root / 'generator'
         (project / 'tools').mkdir(parents=True)
-        for name in NAMES + ['zhigao-connector.mjs', 'connector-updates.js', 'setup-manifest.json','task-runtime.mjs','channel-runtime.mjs','task-channels.mjs']:
+        for name in NAMES + ['zhigao-connector.mjs', 'connector-updates.js', 'setup-manifest.json','task-runtime.mjs','channel-runtime.mjs','task-channels.mjs','grid-runtime.mjs']:
             shutil.copyfile(ROOT / name, project / name)
         shutil.copyfile(ROOT / 'tools' / 'prepare-update-manifest.mjs', project / 'tools' / 'prepare-update-manifest.mjs')
         shutil.copyfile(ROOT / 'tools' / 'extract-office.ps1', project / 'tools' / 'extract-office.ps1')

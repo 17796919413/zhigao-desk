@@ -26,7 +26,7 @@ server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Handler
 threading.Thread(target=server.serve_forever,daemon=True).start();origin=f'http://127.0.0.1:{server.server_port}'
 with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
 backend=f'http://127.0.0.1:{port}'
-env={**os.environ,'ZHIGAO_PORT':str(port),'ZHIGAO_AUTO_UPDATE':'0','ZHIGAO_ORIGINS':origin}
+env={**os.environ,'ZHIGAO_PORT':str(port),'ZHIGAO_AUTO_UPDATE':'0','ZHIGAO_REGISTER_URI':'0','ZHIGAO_ORIGINS':origin}
 log=(OUT/'connector.log').open('w',encoding='utf-8')
 home=OUT/'isolated-home';home.mkdir(exist_ok=True)
 connector=OUT/'test-connector.mjs';connector.write_text((ROOT/'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()',json.dumps(str(home))),encoding='utf-8')
@@ -51,10 +51,18 @@ try:
    result=raw(name,args)
    assert not result.get('isError'),result
    return json.loads(next(c['text'] for c in result['content'] if c['type']=='text'))
-  assert call('zhigao_status')['connected']
-  page.wait_for_function("document.querySelector('#agent-chip')?.textContent?.includes('已连接')")
-  passed('普通网址首次打开自动接通，真实 MCP 状态调用与网页在线标识一致')
-  second=context.new_page();second.goto(origin);second.wait_for_function("document.querySelector('#agent-chip')?.textContent?.includes('其他标签页')")
+  page.evaluate("async()=>window.feedbackAgent=await import('/agent.js')")
+  page.wait_for_function("feedbackAgent.agent.state==='online'")
+  label=page.locator('#agent-chip .agent-state-label').inner_text()
+  assert label=='客户端在线 · 待验证',{'label':label,'agent':page.evaluate("import('/agent.js').then(m=>m.agent)")}
+  project_id=page.locator('[data-setting=project]').input_value()
+  status=call('zhigao_status',{'project':project_id})
+  assert status['connected'] and status['currentProjectId']==project_id,status
+  page.wait_for_function("document.querySelector('#agent-chip .agent-state-label')?.textContent==='AI 可用'")
+  verification=page.evaluate("import('/agent.js').then(m=>m.agent.verification)")
+  assert verification['projectId']==project_id and verification['client']=='isolated-review-test',verification
+  passed('客户端在线先显示待验证；真实 MCP 读取当前项目后显示 AI 可用')
+  second=context.new_page();second.goto(origin);second.wait_for_function("document.querySelector('#agent-chip')?.textContent?.includes('其他页面已连接')")
   second.close();passed('同浏览器第二标签页不会抢占连接')
   page.evaluate("async()=>{const m=await import('/agent.js');m.stopAgent();}")
   page.reload();page.wait_for_selector('#agent-chip');page.wait_for_timeout(2700)
@@ -66,7 +74,7 @@ try:
   page.evaluate('(projects)=>localStorage.setItem("zhigao-settings-v1",JSON.stringify({selected:"A",projects}))',projects)
   page.reload();page.wait_for_selector('.wb-list')
   page.evaluate("()=>{import('/agent.js').then(m=>m.startAgent());}")
-  page.locator('#file-input').set_input_files({'name':'【同一达人】图文大纲.txt','mimeType':'text/plain','buffer':'星河杯的容量为300毫升。'.encode()})
+  page.locator('#file-input').set_input_files({'name':'【同一达人】小红书图文大纲.txt','mimeType':'text/plain','buffer':'星河杯的容量为300毫升。'.encode()})
   page.wait_for_selector('.wb-row');row=page.locator('.wb-row').first;doc_id=row.get_attribute('data-doc-id')
   row.locator('.wb-feedback summary').click();row.locator('[data-feedback-text]').fill('品牌方要求：先讲实际使用场景。');row.locator('[data-action=wb-feedback-save]').click()
   page.wait_for_selector('.wb-feedback-entry');assert '1 条' in page.locator('.wb-feedback summary').inner_text()
@@ -119,14 +127,14 @@ try:
   page.locator('.wb-feedback-entry').first.locator('[data-action=wb-feedback-edit]').click();page.locator('#feedback-edit-text').fill('截图补充：保留自然口吻。');page.locator('[data-action=wb-feedback-update]').click()
   page.wait_for_function("document.querySelector('.wb-feedback-entry').textContent.includes('保留自然口吻')");passed('反馈可编辑，保留原始附件')
   # Same creator and stage, different uploaded document: feedback must not copy.
-  page.locator('#file-input').set_input_files({'name':'【同一达人】图文大纲v2.txt','mimeType':'text/plain','buffer':'星河杯新一轮稿件。'.encode()})
+  page.locator('#file-input').set_input_files({'name':'【同一达人】小红书图文大纲v2.txt','mimeType':'text/plain','buffer':'星河杯新一轮稿件。'.encode()})
   page.wait_for_function("document.querySelectorAll('.wb-row').length===2")
   newer=page.locator('.wb-row').first;new_id=newer.get_attribute('data-doc-id');assert new_id!=doc_id
   assert newer.locator('.wb-feedback-entry').count()==0
   newer_brief=call('zhigao_get_review_brief',{'docId':new_id})
   check=call('zhigao_read_review_context',{'docId':new_id,'reviewToken':newer_brief['reviewToken'],'section':'sources'})
   assert not any(s['kind']=='feedback' for s in check['items']);passed('同达人新版稿件不继承另一份稿件的临时反馈')
-  page.locator('#file-input').set_input_files({'name':'超过15MB.png','mimeType':'image/png','buffer':PNG+b'\0'*(16*1024*1024)})
+  page.locator('#file-input').set_input_files({'name':'【图片达人】小红书图文初稿-超过15MB.png','mimeType':'image/png','buffer':PNG+b'\0'*(16*1024*1024)})
   page.wait_for_function("document.querySelectorAll('.wb-row').length===3",timeout=60000);passed('16MiB稿件通过真实上传、解析与保存')
   page.locator('.navbtn[data-page=rules]').click();page.locator('[data-action=edit-project]').click();page.locator('#edit-project-name').fill('合成品牌甲改名');page.locator('[data-action=save-project-name]').click()
   assert page.locator('[data-setting=project]').input_value()=='A'
@@ -150,7 +158,10 @@ try:
   page.wait_for_function("JSON.parse(localStorage.getItem('zhigao-settings-v1')).projects.length===1")
   page.wait_for_function("!document.querySelector('#modal-root .modal')")
   state=page.evaluate('''async()=>{const db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk',6);q.onsuccess=()=>r(q.result)});const out={};for(const s of ['tasks','items','media','batches','integrations','folders'])out[s]=await new Promise(r=>{const q=db.transaction(s).objectStore(s).getAll();q.onsuccess=()=>r(q.result.map(x=>({id:x.id,projectId:x.projectId})))});db.close();return out;}''')
-  assert all(len(rows)==1 and rows[0]['projectId']=='B' for rows in state.values()),state
+  for store,rows in state.items():
+   expected=[{'id':'B' if store=='folders' else 'brand-B-'+store,'projectId':'B'}]
+   if store=='integrations':expected.append({'id':'backup-change:B','projectId':'B'})
+   assert sorted(rows,key=lambda r:r['id'])==sorted(expected,key=lambda r:r['id']),(store,rows)
   assert call('zhigao_status')['currentProject']=='合成品牌乙'
   denied=raw('zhigao_get_review_brief',{'docId':doc_id});assert denied.get('isError')
   passed('删除品牌原子清理六类数据库记录；另一品牌不变；旧稿不能再审')
@@ -159,7 +170,10 @@ try:
   passed('删除最后一个品牌后刷新保持空白，不恢复默认品牌')
   assert not errors,errors
   client.close();client=None;browser.close()
- (OUT/'result.json').write_text(json.dumps({'checks':checks,'count':len(checks),'pageErrors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
+ (OUT/'result.json').write_text(json.dumps({'passed':True,'checks':checks,'count':len(checks),'pageErrors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
+except Exception as error:
+ (OUT/'result.json').write_text(json.dumps({'passed':False,'checks':checks,'count':len(checks),'pageErrors':errors,'error':str(error)},ensure_ascii=False,indent=2),encoding='utf-8')
+ raise
 finally:
  if client:client.close()
  process.terminate();process.wait(timeout=10);server.shutdown();log.close()

@@ -1,5 +1,6 @@
 // Private local runtime and resumable jobs; never accepts arbitrary executable paths from the page.
 import fs from 'node:fs';
+import {cleanupManifest,cleanupError,assertCachePath,removeCacheJob,createCacheRetirement,matchesRetiredSource} from './cache-cleanup.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -9,6 +10,20 @@ const ROOT=process.env.ZHIGAO_MEDIA_HOME||path.join(os.homedir(),'.zhigao','medi
 const WORKER=fileURLToPath(new URL('./media-worker.py',import.meta.url));
 const VENV=path.join(ROOT,'runtime'),PYTHON=path.join(VENV,process.platform==='win32'?'Scripts/python.exe':'bin/python');
 const configPath=path.join(ROOT,'runtime.json'),jobs=path.join(ROOT,'jobs'),running=new Set();let queue=Promise.resolve();
+const retired=createCacheRetirement(ROOT);
+export function cleanupLibraryMedia(value){
+ const manifest=cleanupManifest(value);retired.retire(manifest);const removed=[];
+ if(fs.existsSync(jobs))for(const id of fs.readdirSync(jobs)){
+  if(!/^[a-f0-9-]{36}$/.test(id))continue;
+  const dir=assertCachePath(jobs,path.join(jobs,id)),file=assertCachePath(jobs,path.join(dir,'meta.json'));
+  if(!fs.existsSync(file))continue;const meta=read(file);if(!matchesRetiredSource(meta,manifest,'media'))continue;
+  const lock=path.join(dir,'process.lock'),progressFile=path.join(dir,'progress.json');
+  const progress=fs.existsSync(progressFile)?read(assertCachePath(jobs,progressFile)):{};
+  if(running.has(id)||alive(progress.pid)||fs.existsSync(lock))throw cleanupError('CLEANUP_BUSY');
+  save(file,{...meta,retired:true});removeCacheJob(jobs,id);removed.push(id);
+ }
+ return {removed};
+}
 const setupState=path.join(ROOT,'setup-progress.json');
 const MODELS=['large-v3-turbo','large-v3','medium','small','tiny'];
 function alive(pid){if(!Number.isInteger(pid)||pid<=0)return false;try{process.kill(pid,0);return true;}catch(e){return e.code==='EPERM';}}
@@ -70,12 +85,16 @@ function launch(dir,meta){
 export async function mediaAction(body){
  if(body.action==='doctor')return mediaDoctor();
  if(body.action==='begin'){
+  if(body.libraryAssetKey!==undefined&&(typeof body.libraryAssetKey!=='string'||!body.libraryAssetKey||body.libraryAssetKey.length>200))throw cleanupError('CLEANUP_INPUT');
+  retired.assert(body.projectId,body.libraryAssetKey);
   const status=await mediaDoctor();if(!status.ready)return {state:'setup_required',runtime:status};
+  retired.assert(body.projectId,body.libraryAssetKey);
   if(typeof body.docId!=='string'||typeof body.projectId!=='string'||typeof body.revision!=='string'||!Number.isSafeInteger(body.size)||body.size<=0)throw Error('视频元数据无效。');
-  const id=crypto.randomUUID(),token=crypto.randomBytes(24).toString('hex'),dir=path.join(jobs,id),meta={id,token,docId:body.docId,projectId:body.projectId,revision:body.revision,size:body.size,received:0,state:'uploading',created:new Date().toISOString()};save(path.join(dir,'meta.json'),meta);fs.writeFileSync(path.join(dir,'source.media'),'');return {jobId:id,jobToken:token,state:'uploading',chunkBytes:512*1024};
+  const id=crypto.randomUUID(),token=crypto.randomBytes(24).toString('hex'),dir=path.join(jobs,id),meta={id,token,docId:body.docId,projectId:body.projectId,...(body.libraryAssetKey?{libraryAssetKey:body.libraryAssetKey}:{}),revision:body.revision,size:body.size,received:0,state:'uploading',created:new Date().toISOString()};save(path.join(dir,'meta.json'),meta);fs.writeFileSync(path.join(dir,'source.media'),'');return {jobId:id,jobToken:token,state:'uploading',chunkBytes:512*1024};
  }
  const {dir,meta}=job(body.jobId,body.jobToken);
  if(body.docId!==meta.docId||body.projectId!==meta.projectId||body.revision!==meta.revision)throw Error('视频任务所属品牌、稿件或原件版本不匹配。');
+ if(meta.retired)throw cleanupError('SOURCE_RETIRED');retired.assert(meta.projectId,meta.libraryAssetKey);
  if(body.action==='chunk'){
   if(meta.state!=='uploading'||body.offset!==meta.received||typeof body.data!=='string'||body.data.length>800000||!/^[A-Za-z0-9+/=]+$/.test(body.data))throw Error('视频上传分片不连续或无效。');const bytes=Buffer.from(body.data,'base64');if(!bytes.length||meta.received+bytes.length>meta.size)throw Error('视频分片大小不符。');const source=path.join(dir,'source.media'),actual=fs.statSync(source).size;if(actual<meta.received)throw Error('已保存的上传分片不完整，请重新关联原件。');if(actual>meta.received)fs.truncateSync(source,meta.received);fs.appendFileSync(source,bytes);meta.received+=bytes.length;save(path.join(dir,'meta.json'),meta);return {received:meta.received,size:meta.size};
  }

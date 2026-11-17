@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "zhigao",
-  "version": "1.14.2",
+  "version": "1.15.0",
   "guide": "./AGENT_SETUP.md",
   "connector": "./zhigao-connector.mjs",
   "connectPage": "./?connect=1",
@@ -127,7 +127,7 @@
   },
   "autoUpdate": {
     "protocol": 1,
-    "sha256": "7128b67620e6fc40c65be2e5686646e3e5ef2c5200a8213854236094ce8b5b33",
+    "sha256": "94325b570b59a58063763477e5c05ee3a52a175f695c0924b543ac61f29c0df7",
     "startup": true,
     "intervalHours": 6,
     "retryMinutes": 15,
@@ -136,15 +136,19 @@
   },
   "media": {
     "protocol": 1,
-    "version": "1.14.2",
+    "version": "1.15.0",
     "files": {
       "media-runtime.mjs": {
-        "sha256": "78e1d5504bea6f2f69fe74f8f855f4d5655712efdd7bc63fcff537d2a0bc81c0",
-        "bytes": 15026
+        "sha256": "c4bf79ff8767aa2392dc6c8b099290f745fac7b7aa446e21090e6bd78c835324",
+        "bytes": 16501
       },
       "media-worker.py": {
         "sha256": "11edfc0882f2bddbaa424fabe17ae4d85c445b03b88034551f502023afdb20d6",
         "bytes": 19411
+      },
+      "cache-cleanup.mjs": {
+        "sha256": "6e4b774921aed0dbb11fa93795e97a25455cec17b95b55978db00f672f74d731",
+        "bytes": 4450
       }
     },
     "defaultModel": "large-v3-turbo",
@@ -152,7 +156,7 @@
     "semanticReview": "current-connected-agent"
   },
   "review": {
-    "protocolVersion": "1.14.2",
+    "protocolVersion": "1.15.0",
     "context": "Read each required brief.context section through nextCursor=null; reconstruct json-fragment records and block slices without truncation.",
     "checkpoint": "record_review_checks saves checks without completing review. Final explicit arrays replace saved arrays.",
     "basisChanges": "BASIS_CHANGED requires retry:true, updates pages and a fresh full review. Previous checks are advisory only.",
@@ -186,13 +190,19 @@
     "confirmation": "Exact task, revision, environment and current user reply; configuration never authorizes business writes.",
     "modules": {
       "task-runtime.mjs": {
-        "sha256": "7b83cda0fe3471fb5642499727dfdd3f200857636e614543ceff25739f2d0fc9"
+        "sha256": "02a11828d77470153f82ac4fc7d0808637314957db2c61842fdca5cbd0c53038"
       },
       "channel-runtime.mjs": {
-        "sha256": "6776595e06a21371f2b0b7585534abb64b5f9d50f9fbaf8de2b7c8310849f14f"
+        "sha256": "56e80e90781d1fff5661f92567f0a9889e4fbcc366fe2d8af9a090db3dd0805b"
       },
       "task-channels.mjs": {
-        "sha256": "7b8b78c04cf926f5c25b1caf46a1d70cbaf36c0565bf86aea1b11f95d42483bf"
+        "sha256": "2d7b6c41d08a3ef8d7c1d19d2d656d51ae0ebb7b8998a2eb5552b6321d4d2cab"
+      },
+      "grid-runtime.mjs": {
+        "sha256": "33a7a88acc988b0b3bd6e318fe3852e3fd99ab71fa15a16b5da85dea6942022a"
+      },
+      "cache-cleanup.mjs": {
+        "sha256": "6e4b774921aed0dbb11fa93795e97a25455cec17b95b55978db00f672f74d731"
       }
     }
   }

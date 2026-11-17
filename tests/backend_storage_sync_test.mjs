@@ -17,7 +17,7 @@ await check('saving an item propagates storage failure and does not insert it in
  assert.equal(context.items.length,0);
 });
 for(const fault of ['readback','response','journal'])await check('remote '+fault+' uncertainty stops the remaining writes',async()=>{
- const actual=connector.slice(connector.indexOf('async function writeFeishu('),connector.indexOf('// ---------- 执行表提炼'));
+ const actual=connector.slice(connector.indexOf('const activityCellKey='),connector.indexOf('function validateWrite('))+connector.slice(connector.indexOf('async function writeFeishu('),connector.indexOf('// ---------- 执行表提炼'));
  let remoteWrites=0,reads=0;
  const sandbox={workbookInfo:async()=>({}),workbookKey:()=> 'book',readSheet:async()=>({}),validateWrite:w=>({physicalRow:w.row,keyNames:['author'],keyColumns:[0]}),columnLabel:()=> 'B',
   freshRowCells:async()=>{reads++;if(fault==='readback'&&reads===2)throw Error('read failed');return new Map([[0,{value:'author'}],[1,{value:reads%2===0?'one':''}]]);},
@@ -32,7 +32,7 @@ for(const fault of ['readback','response','journal'])await check('remote '+fault
 for(const scenario of ['confirmed','changed','blank','journal-before-send'])await check('persistent intent recovery: '+scenario,async()=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'zg-write-intent-'));
  try{
-  const actual=connector.slice(connector.indexOf('async function writeFeishu('),connector.indexOf('// ---------- 执行表提炼'));
+  const actual=connector.slice(connector.indexOf('const activityCellKey='),connector.indexOf('function validateWrite('))+connector.slice(connector.indexOf('async function writeFeishu('),connector.indexOf('// ---------- 执行表提炼'));
   const helpers=connector.slice(connector.indexOf('function journal()'),connector.indexOf('const SEED_HEADERS='));
   const w={row:2,column:1,header:'脚本',field:'script',key:{author:'author'},keyColumns:{author:0},value:'one'};
   let value='',writes=0,lose=true;

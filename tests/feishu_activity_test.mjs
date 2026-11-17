@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {autoMap,rowKey,rowIdentity,rowInActivity,buildPlan} from '../feishu.js';
+import {activityRowMatch} from '../creator-match.js';
+import {createSyncFixture} from './feishu_sync_fixture.mjs';
+const home=fs.mkdtempSync(path.join(os.tmpdir(),'zhigao-activity-sync-')),fixture=createSyncFixture(home),checks=[];
+const p={id:'p',date:'basis',activities:[{id:'a',name:'秋季活动'},{id:'b',name:'冬季活动'}]};
+const a={id:'a',projectId:'p',activityId:'a',author:'同名达人',platform:'小红书',title:'同款内容',kind:'图文'},b={...a,id:'b',activityId:'b'};
+const sheet=()=>({id:'s',headers:fixture.state().headers,rows:fixture.state().rows,map:autoMap(fixture.state().headers)});
+const write=(row,value='AI已审 · 1处修改')=>({status:'update',field:'outline',column:4,header:'大纲',value,...rowIdentity(sheet(),row)});
+const send=w=>fixture.invoke({action:'write',url:'https://example.feishu.cn/sheets/book',sheetId:'s',writes:[w]});
+const ok=s=>{checks.push(s);console.log('PASS '+s);};
+try{
+ assert.equal(autoMap(['活动反馈','项目名称','活动名称']).activity,2);assert.equal(autoMap(['活动反馈','项目名称']).activity,-1);
+ for(const [it,row] of [[a,0],[b,1]]){const result=activityRowMatch(it,[a,b],[sheet()],p);assert.equal(result.hits[0].row,row);assert.equal(result.conflicts.length,0);assert.equal(result.issues.length,0);}assert.notEqual(rowKey(sheet(),0),rowKey(sheet(),1));ok('明确活动列区分同达人同标题；活动反馈等表头不误识别');
+ assert.equal(activityRowMatch({...a,title:'另一篇内容'},[a],[sheet()],p).hits.length,0);
+ let s=sheet();s={...s,rows:[s.rows[0].map((x,i)=>i===3?'':x)]};assert.equal(activityRowMatch(a,[a],[s],p).hits.length,0);
+ s.rows[0][3]='未知活动';assert.equal(activityRowMatch(a,[a],[s],p).hits.length,0);s.rows[0][3]='a';assert(rowInActivity(a,s,0,p));ok('活动空白或未知不猜测，明确活动ID可匹配');
+ const dup={...p,activities:[...p.activities,{id:'c',name:'秋季活动'}]};assert.equal(activityRowMatch(a,[a],[sheet()],dup).hits.length,0);
+ const duplicate={...sheet(),headers:[...sheet().headers,'活动名称']};assert.equal(activityRowMatch(a,[a],[duplicate],p).hits.length,0);assert.equal(activityRowMatch(a,[a],[duplicate],p).issues.length,1);assert.equal(activityRowMatch(a,[a],[sheet()]).hits.length,0);ok('重复活动名、重复活动列和缺项目上下文均不自动匹配');
+ const legacy={id:'s',map:{author:0,platform:1,title:2},rows:[['同名达人','小红书','同款内容']]};assert.equal(rowKey(legacy,0),'同名达人|小红书|同款内容');assert.equal(activityRowMatch(a,[a,b],[legacy],p).conflicts.length,1);ok('无活动列旧绑定格式不变，跨活动争行继续阻断');
+ assert.equal(fixture.validate(write(0)).physicalRow,2);assert.equal(fixture.validate(write(1)).physicalRow,3);
+ let w=write(0);delete w.key.activity;delete w.keyColumns.activity;assert.throws(()=>fixture.validate(w),/活动/);
+ w=write(0);w.key.activity='不存在';assert.throws(()=>fixture.validate(w),/未找到/);ok('实际连接器把活动纳入行身份，旧客户端漏传活动被拒绝');
+ const before=structuredClone(fixture.state().rows);assert.equal((await send(write(0))).written,1);assert.equal((await send(write(1,'AI已审 · 2处修改'))).written,1);
+ for(let i=0;i<2;i++)for(let j=0;j<before[i].length;j++)if(j!==4)assert.equal(fixture.state().rows[i][j],before[i][j]);
+ const history=JSON.parse(fs.readFileSync(path.join(home,'sync-history.json')));assert.equal(history.entries.length,2);assert.notEqual(history.entries[0].key,history.entries[1].key);assert.equal(history.entries[0].rowKey,rowKey(sheet(),0));assert.equal((await send(write(0))).results[0].reused,true);ok('两活动各只写阶段格，其他格不变，写入历史隔离且重复复用');
+ w=write(1,'AI已审 · 3处修改');w.expected='AI已审 · 1处修改';assert.equal((await send(w)).rejected,1);w.expected='AI已审 · 2处修改';assert.equal((await send(w)).written,1);ok('只能更新本活动上次写入值，不借另一活动历史覆盖');
+ fixture.control({reset:true});w=write(0);fixture.control({insertBeforeWrite:true});const shifted=await send(w);assert.equal(shifted.results[0].cell,'E3');assert.equal(fixture.state().rows[2][4],'');ok('读取后插行，连接器重新按活动身份定位新行');
+ fixture.control({reset:true});w=write(0);fixture.control({changeActivity:true});assert.equal((await send(w)).rejected,1);assert.equal(fixture.state().writes.length,0);ok('写前活动变化时停止，不写到移位或改属记录');
+ fixture.control({reset:true});w=write(0);fixture.control({lost:true});assert.equal((await send(w)).uncertain,1);assert.equal((await send(w)).written,1);assert.equal(fixture.state().writes.length,1);ok('响应丢失保留活动身份，核对后恢复且不重复写');
+ fixture.control({reset:true,formula:true});assert.equal((await send(write(0))).rejected,1);assert.equal(fixture.state().writes.length,0);ok('阶段列公式受到保护');
+ fixture.control({reset:true,writeScope:'definite'});await assert.rejects(send(write(0)),{code:'FEISHU_SCOPE'});assert.equal(fixture.state().writes.length,0);
+ let log=JSON.parse(fs.readFileSync(path.join(home,'sync-history.json')));assert.equal(log.intents.length,0);assert.equal(log.rejected.length,1);assert.equal(log.entries.length,0);
+ fixture.control({writeScope:false});assert.equal((await send(write(0))).written,1);assert.equal(fixture.state().writes.length,1);ok('单稿明确scope拒绝留拒绝记录，授权后可写且不伪造成功历史');
+ fixture.control({reset:true,writeScope:'unknown'});assert.equal((await send(write(0))).uncertain,1);fixture.control({writeScope:false});await assert.rejects(send(write(0)),/未确认/);assert.equal(fixture.state().writes.length,0);ok('不明确scope失败仍保留未决意图，不自动重放');
+ fixture.control({reset:true,readbackScope:true});assert.equal((await send(write(0))).uncertain,1);assert.equal(fixture.state().writes.length,1);
+ log=JSON.parse(fs.readFileSync(path.join(home,'sync-history.json')));assert.equal(log.intents.length,1);assert.equal(log.rejected?.length||0,0);
+ fixture.control({readbackScope:false});assert.equal((await send(write(0))).written,1);assert.equal(fixture.state().writes.length,1);ok('写后回读缺scope不能把已执行写入误标未执行，恢复只读核对');
+ if(process.env.ZHIGAO_VERIFY_OUT){fs.mkdirSync(process.env.ZHIGAO_VERIFY_OUT,{recursive:true});fs.writeFileSync(path.join(process.env.ZHIGAO_VERIFY_OUT,'result.json'),JSON.stringify({ok:true,checks},null,2));}
+}finally{fs.rmSync(home,{recursive:true,force:true});}

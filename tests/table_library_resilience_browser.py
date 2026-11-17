@@ -1,32 +1,52 @@
 """Synthetic failure/race checks. No connector, user folders or real Feishu calls."""
-import functools, http.server, json, os, threading
+import functools, http.server, json, os, threading, traceback
+from table_grid_fixture import grid_data
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(os.environ['ZHIGAO_VERIFY_OUT']) / 'resilience'
-OUT.mkdir(parents=True, exist_ok=True)
+OUT.mkdir(parents=True, exist_ok=False)
 http.server.ThreadingHTTPServer.request_queue_size = 128
 class Handler(http.server.SimpleHTTPRequestHandler):
     protocol_version='HTTP/1.1'
     def log_message(self, *args): pass
+    def do_GET(self):
+        if self.path.split('?')[0]=='/app.js':
+            data=((ROOT/'app.js').read_text(encoding='utf-8')+"\nwindow.probe={actions,grid:sourceGrid,state:()=>({settings,fsLive,tasks,items}),read:readCurrentFeishuTable};").encode()
+            self.send_response(200);self.send_header('Content-Type','text/javascript');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
+        super().do_GET()
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(ROOT)))
 threading.Thread(target=server.serve_forever, daemon=True).start()
 origin = f'http://127.0.0.1:{server.server_port}'
-checks, errors, pending = [], [], []
+checks, errors, pending, grid_pending = [], [], [], []
+latest = {}
+hold_grid = False
 def passed(name):
     checks.append(name)
     print('PASS ' + name, flush=True)
 def reply(route, title='当前审核表', status=200):
     data = {'ok': True, 'data': {'title': title, 'revision': title, 'sheets': [{'sheetId': 's', 'name': '合作内容', 'headers': ['达人', '发布平台', '合作产品', '大纲'], 'rows': [['合成达人', '小红书', title, '']], 'rowStart': 2}]}}
     if status != 200: data = {'ok': False, 'code': 'TEST_ERROR', 'error': f'隔离测试 HTTP {status}，请重试'}
+    else:
+        latest[route.request.post_data_json['url']]=data['data']
+        if route.request.post_data_json['action']=='gridRead':
+            data['data']=grid_data(data['data']['sheets'],route.request.post_data_json,title)
     route.fulfill(status=status, content_type='application/json', body=json.dumps(data, ensure_ascii=False))
+
+def feishu_route(route):
+    body=route.request.post_data_json
+    if body['action']=='gridRead':
+        if hold_grid:grid_pending.append(route)
+        else:reply(route,latest.get(body['url'],{}).get('title','当前审核表'))
+    else:pending.append(route)
 try:
  with sync_playwright() as pw:
     browser = pw.chromium.launch(channel='msedge', headless=True)
     context = browser.new_context(viewport={'width': 1440, 'height': 1000})
     context.route('http://127.0.0.1:47821/**', lambda r: r.abort())
-    context.route('**/page/feishu', lambda r: pending.append(r))
+    context.route('**/page/feishu', feishu_route)
+    context.add_init_script("localStorage.setItem('zhigao-agent-v1','off')")
     page = context.new_page()
     page.on('pageerror', lambda e: errors.append(str(e)))
     page.goto(origin)
@@ -34,7 +54,7 @@ try:
     projects = [{'id': p, 'name': '隔离品牌' + p, 'status': 'active', 'notes': '', 'rules': [], 'library': [], 'feishu': {'reviewTableVersion': 2, 'source': None, 'refined': None, 'sheets': []}} for p in ['A', 'B']]
     page.evaluate("p=>{localStorage.setItem('zhigao-settings-v1',JSON.stringify({selected:'A',projects:p}));}", projects)
     page.reload()
-    page.locator('.navbtn[data-page=feishu]').click()
+    page.wait_for_function('!!window.probe');page.locator('.navbtn[data-page=feishu]').click()
     def state(): return page.evaluate("JSON.parse(localStorage.getItem('zhigao-settings-v1'))")
     def wait_read():
         for _ in range(100):
@@ -48,18 +68,18 @@ try:
     first = save('TableA')
     second = save('TableB')
     reply(second, '新链接内容')
-    page.wait_for_function("document.querySelector('.review-table')?.textContent.includes('新链接内容')")
+    page.wait_for_function("probe.state().settings.projects.find(p=>p.id===probe.state().settings.selected).feishu.liveMeta?.title.includes('新链接内容')")
     reply(first, '迟到旧内容', 403)
     page.wait_for_timeout(150)
     assert '迟到旧内容' not in page.locator('.content').inner_text()
-    assert not page.locator('.table-notice.error').count()
+    assert not page.evaluate('probe.state().fsLive?.error')
     assert state()['projects'][0]['feishu']['liveMeta']['title'] == '新链接内容'
     passed('换链接后旧失败响应不会覆盖新表内容或错误提示')
 
     first = save('TableB')
     second = save('TableB')
     reply(second, '较新读取')
-    page.wait_for_function("document.querySelector('.review-table')?.textContent.includes('较新读取')")
+    page.wait_for_function("probe.state().settings.projects.find(p=>p.id===probe.state().settings.selected).feishu.liveMeta?.title.includes('较新读取')")
     reply(first, '过期读取')
     page.wait_for_timeout(150)
     assert state()['projects'][0]['feishu']['liveMeta']['title'] == '较新读取'
@@ -71,9 +91,9 @@ try:
         page.locator('.navbtn[data-page=feishu]').click()
     switch('B')
     r = save('TableB'); reply(r, '品牌B内容')
-    page.wait_for_function("document.querySelector('.review-table')?.textContent.includes('品牌B内容')")
+    page.wait_for_function("probe.state().settings.projects.find(p=>p.id===probe.state().settings.selected).feishu.liveMeta?.title.includes('品牌B内容')")
     switch('A')
-    page.locator('[data-action=fs-live-read-all]').click(); r = wait_read()
+    page.evaluate("()=>{probe.actions['fs-live-read-all']()}"); r = wait_read()
     switch('B')
     reply(r, '跨品牌迟到内容')
     page.wait_for_timeout(150)
@@ -82,20 +102,55 @@ try:
 
     page.evaluate("""()=>{const set=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(window.__quota&&k==='zhigao-settings-v1')throw new DOMException('模拟配额不足','QuotaExceededError');return set.call(this,k,v);};window.__quota=true;}""")
     before = state()
-    page.locator('[data-action=fs-live-read-all]').click(); reply(wait_read(), '不可持久化新内容')
-    page.wait_for_selector('.table-notice.error')
+    page.evaluate("()=>{probe.actions['fs-live-read-all']()}"); reply(wait_read(), '不可持久化新内容')
+    page.wait_for_function('!!probe.state().fsLive?.error')
     assert state() == before
-    assert '不可持久化新内容' not in page.locator('.review-table').inner_text()
+    assert state()['projects'][1]['feishu']['liveMeta']['title']=='品牌B内容'
     page.evaluate('window.__quota=false')
     passed('表格存储失败保留原快照，内存与磁盘一致并显示失败')
     for status in [403, 429, 500]:
-        page.locator('[data-action=fs-live-read-all]').click(); reply(wait_read(), status=status)
-        page.wait_for_function('s=>document.querySelector(".table-notice.error")?.textContent.includes(String(s))', arg=status)
-        assert '品牌B内容' in page.locator('.review-table').inner_text()
-    page.locator('[data-action=fs-live-read-all]').click(); reply(wait_read(), '网络恢复内容')
-    page.wait_for_function("document.querySelector('.review-table')?.textContent.includes('网络恢复内容')")
-    assert not page.locator('.table-notice.error').count()
+        page.evaluate("()=>{probe.actions['fs-live-read-all']()}"); reply(wait_read(), status=status)
+        page.wait_for_function('s=>probe.state().fsLive?.error.includes(String(s))', arg=status)
+        assert state()['projects'][1]['feishu']['liveMeta']['title']=='品牌B内容'
+    page.evaluate("()=>{probe.actions['fs-live-read-all']()}"); reply(wait_read(), '网络恢复内容')
+    page.wait_for_function("probe.state().settings.projects.find(p=>p.id===probe.state().settings.selected).feishu.liveMeta?.title.includes('网络恢复内容')")
+    assert not page.evaluate('probe.state().fsLive?.error')
     passed('权限错误、限流、服务错误保留快照，恢复读取后清除错误')
+
+    # Exercise the visible source grid independently of the snapshot adapter.
+    hold_grid=True
+    def wait_grid():
+        for _ in range(100):
+            if grid_pending:return grid_pending.pop(0)
+            page.wait_for_timeout(30)
+        raise AssertionError('No isolated grid read request')
+    page.locator('[data-grid-refresh]').click();r=wait_grid();reply(r,'原表已恢复')
+    page.wait_for_function("document.querySelector('[data-grid-cell=C2]')?.textContent==='原表已恢复'")
+    for status in [403,429,500]:
+        page.locator('[data-grid-refresh]').click();reply(wait_grid(),status=status)
+        page.wait_for_function('s=>document.querySelector("[data-grid-status]")?.textContent.includes(String(s))',arg=status)
+        assert page.locator('[data-grid-cell=C2]').inner_text()=='原表已恢复'
+    page.locator('[data-grid-refresh]').click();reply(wait_grid(),'原表网络恢复')
+    page.wait_for_function("document.querySelector('[data-grid-cell=C2]')?.textContent==='原表网络恢复'")
+    assert 'HTTP' not in page.locator('[data-grid-status]').inner_text()
+    passed('现行原表刷新403/429/500错误可见，保留旧画面；恢复后显示新内容并清除错误')
+    page.locator('[data-action=fs-show-table]').click();first=wait_grid()
+    page.locator('[data-action=fs-show-table]').click();second=wait_grid()
+    reply(second,'原表较新响应');page.wait_for_function("document.querySelector('[data-grid-cell=C2]')?.textContent==='原表较新响应'")
+    reply(first,'原表过期响应');page.wait_for_timeout(150)
+    assert page.locator('[data-grid-cell=C2]').inner_text()=='原表较新响应'
+    passed('现行原表重复读取乱序返回，只显示最后一次请求结果')
+    page.locator('[data-grid-refresh]').click();first=wait_grid()
+    switch('A');reply(wait_grid(),'原表品牌A');page.wait_for_function("document.querySelector('[data-grid-cell=C2]')?.textContent==='原表品牌A'")
+    reply(first,'原表跨品牌迟到');page.wait_for_timeout(150)
+    assert page.locator('[data-grid-cell=C2]').inner_text()=='原表品牌A'
+    switch('B');reply(wait_grid(),'原表品牌B');page.wait_for_function("document.querySelector('[data-grid-cell=C2]')?.textContent==='原表品牌B'")
+    hold_grid=False
+    passed('现行原表共用同链接切换品牌，迟到响应不覆盖当前品牌')
+    page.screenshot(path=str(OUT/'grid-race-desktop.png'),full_page=True)
+    page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(OUT/'grid-race-narrow.png'),full_page=True)
+    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
+    page.set_viewport_size({'width':1440,'height':1000})
 
     page.locator('.navbtn[data-page=rules]').click()
     def upload(name, text):
@@ -113,9 +168,11 @@ try:
     page.evaluate("()=>{const b=document.querySelector('[data-action=lib-import-update]');b.click();b.click();}")
     page.wait_for_function("JSON.parse(localStorage.getItem('zhigao-settings-v1')).projects[1].library[0].text==='更新全文'")
     d = state()['projects'][1]['library'][0]
-    assert len(d['history']) == 1 and d['history'][0]['text'] == '原始全文'
+    # Current requirement: replaced brand materials have no retained versions.
+    assert 'history' not in d and d['text'] == '更新全文'
     assert len(state()['projects'][1]['library']) == 1
-    passed('空文件拒绝；同名更新重复点击只保存一次并保留旧版本')
+    assert media_count() == 1
+    passed('空文件拒绝；同名更新重复点击只保存一次，旧资料索引与原件缓存清除')
 
     before = state(); originals = media_count()
     page.evaluate('window.__quota=true')
@@ -125,7 +182,7 @@ try:
     page.evaluate('window.__quota=false')
     passed('导入正文索引存储失败时回收本次数据库原件，不出现虚假成功')
 
-    page.evaluate("""()=>{const digest=crypto.subtle.digest.bind(crypto.subtle);crypto.subtle.digest=async function(a,b){if(new TextDecoder().decode(b)==='延迟新资料'){window.__digestHeld=true;await new Promise(r=>window.__releaseDigest=r);}return digest(a,b);};}""")
+    page.evaluate("""()=>{const digest=crypto.subtle.digest.bind(crypto.subtle);crypto.subtle.digest=async function(a,b){if(!window.__digestHeld&&new TextDecoder().decode(b)==='延迟新资料'){window.__digestHeld=true;await new Promise(r=>window.__releaseDigest=r);}return digest(a,b);};}""")
     upload('延迟资料.txt', '延迟新资料')
     page.wait_for_function('window.__digestHeld===true')
     row = page.locator('.asset-row').filter(has_text='同名资料')
@@ -169,10 +226,11 @@ try:
     assert len(state()['projects'][1]['library']) == 3
     passed('磁盘原件被修改或删除时明确报错，资料记录不被静默删除')
 
+    # Compatibility action only, absent from current UI. Preserve backend guards.
     # More than one write batch: an uncertain first response must stop later writes.
-    page.evaluate("""async()=>{const s=JSON.parse(localStorage.getItem('zhigao-settings-v1')),p=s.projects[1],sheet=p.feishu.sheets.find(s=>s.live),{rowKey}=await import('/feishu.js');sheet.rows=Array.from({length:25},(_,i)=>['批量达人'+i,'小红书','产品','']);window.__batchSheet=sheet;localStorage.setItem('zhigao-settings-v1',JSON.stringify(s));const db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk',6);q.onsuccess=()=>r(q.result)});await new Promise((r,j)=>{const tx=db.transaction(['items','tasks'],'readwrite');for(let i=0;i<25;i++){const id='batch-'+i;tx.objectStore('items').put({id,projectId:p.id,author:'批量达人'+i,platform:'小红书',title:'产品',kind:'图文',feishu:{sheetId:sheet.id,key:rowKey(sheet,i)}});tx.objectStore('tasks').put({id:'doc-'+i,itemId:id,projectId:p.id,filename:id+'.txt',fmt:'text',stage:'大纲',cells:[{id:'p',current:'合成稿'}],updated:'2026-11-12',ai:{changes:[],needsSupplement:false},flow:{state:'review',round:1,feedback:[]}});}tx.oncomplete=r;tx.onerror=()=>j(tx.error)});db.close();}""")
+    page.evaluate("""async()=>{const s=JSON.parse(localStorage.getItem('zhigao-settings-v1')),p=s.projects[1],sheet=p.feishu.sheets.find(s=>s.live),{rowKey}=await import('/feishu.js');sheet.rows=Array.from({length:25},(_,i)=>['批量达人'+i,'小红书','产品','']);window.__batchSheet=sheet;localStorage.setItem('zhigao-settings-v1',JSON.stringify(s));const db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk',6);q.onsuccess=()=>r(q.result)});await new Promise((r,j)=>{const tx=db.transaction(['items','tasks'],'readwrite');for(let i=0;i<25;i++){const id='batch-'+i;tx.objectStore('items').put({id,projectId:p.id,author:'批量达人'+i,platform:'小红书',title:'产品',kind:'图文',feishu:{sheetId:sheet.id,key:rowKey(sheet,i)}});tx.objectStore('tasks').put({id:'doc-'+i,itemId:id,projectId:p.id,filename:id+'.txt',fmt:'text',stage:'大纲',cells:[{id:'p',current:'合成稿'}],updated:'2026-11-12',ai:{changes:[],needsSupplement:false,assurance:{complete:true,projectRevision:p.activityRevisions?.legacy??p.date??''}},flow:{state:'review',round:1,feedback:[]}});}tx.oncomplete=r;tx.onerror=()=>j(tx.error)});db.close();}""")
     page.reload();page.locator('.navbtn[data-page=feishu]').click()
-    page.locator('[data-action=fs-live-prepare-write]').click()
+    page.wait_for_function('!!window.probe');page.evaluate("()=>probe.actions['fs-live-prepare-write']()")
     assert '25 个单元格' in page.locator('.modal').inner_text()
     page.locator('[data-action=fs-write-confirm]').click()
     request=wait_read(); body=json.loads(request.request.post_data)
@@ -180,45 +238,48 @@ try:
     reply(request,status=500)
     refresh=wait_read();assert json.loads(refresh.request.post_data)['action']=='readAll'
     reply(refresh,'中断后回读')
-    page.wait_for_function("document.querySelector('.table-notice.error')?.textContent.includes('请刷新表格确认结果')")
+    page.wait_for_function("probe.state().fsLive?.lastWriteError?.includes('请刷新表格确认结果')")
     assert not pending
     passed('25格分批同步首批响应失败后停止余下批次，先回读核对且不自动重试写入')
 
     # A successful transport carrying an uncertain cell must also stop all batches.
-    page.locator('[data-action=fs-live-read-all]').click(); request=wait_read()
+    page.evaluate("()=>{probe.actions['fs-live-read-all']()}"); request=wait_read()
     rows=[['批量达人'+str(i),'小红书','产品',''] for i in range(25)]
     batch_data={'title':'批量审核表','revision':'batch-uncertain','sheets':[{'sheetId':'s','name':'合作内容','headers':['达人','发布平台','合作产品','大纲'],'rows':rows,'rowStart':2}]}
     request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':batch_data},ensure_ascii=False))
-    page.wait_for_function("document.querySelectorAll('.review-table tbody tr').length===25")
-    page.locator('[data-action=fs-live-prepare-write]').click();page.locator('[data-action=fs-write-confirm]').click()
+    page.wait_for_function("probe.state().settings.projects[1].feishu.sheets.find(s=>s.live)?.rows.length===25")
+    page.evaluate("()=>probe.actions['fs-live-prepare-write']()");page.locator('[data-action=fs-write-confirm]').click()
     request=wait_read();assert json.loads(request.request.post_data)['action']=='write'
     request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':{'written':1,'rejected':0,'uncertain':1,'notAttempted':18,'results':[{'status':'written'},{'status':'uncertain','cell':'D4','error':'结果待核对'}]}}))
     request=wait_read();assert json.loads(request.request.post_data)['action']=='readAll'
     request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':batch_data},ensure_ascii=False))
-    page.wait_for_function("document.querySelector('.table-notice.error')?.textContent.includes('请刷新表格确认结果')")
+    page.wait_for_function("probe.state().fsLive?.lastWriteError?.includes('请刷新表格确认结果')")
     summary=state()['projects'][1]['feishu']['liveMeta']['lastWrite']
     assert (summary['written'],summary['rejected'],summary['uncertain'],summary['notAttempted'])==(1,0,1,23),summary
     assert not pending
-    assert page.locator('#toast.show').count()==0
+    assert '同步成功' not in page.locator('#toast').inner_text()
     page.screenshot(path=str(OUT/'uncertain-sync-counts.png'),full_page=True)
     page.set_viewport_size({'width':390,'height':844});assert page.evaluate('document.documentElement.scrollWidth<=innerWidth');page.screenshot(path=str(OUT/'uncertain-sync-mobile.png'),full_page=True);page.set_viewport_size({'width':1440,'height':1000})
     passed('首批HTTP成功但含结果不明时停止后续批；已确认、拒绝、待核对、未尝试分开计数')
 
     # Restore a 25-row source to exercise changing the link mid-write.
-    page.locator('[data-action=fs-live-read-all]').click(); request=wait_read()
+    page.evaluate("()=>{probe.actions['fs-live-read-all']()}"); request=wait_read()
     rows=[['批量达人'+str(i),'小红书','产品',''] for i in range(25)]
     request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':{'title':'批量审核表','revision':'batch2','sheets':[{'sheetId':'s','name':'合作内容','headers':['达人','发布平台','合作产品','大纲'],'rows':rows,'rowStart':2}]}},ensure_ascii=False))
-    page.wait_for_function("document.querySelectorAll('.review-table tbody tr').length===25")
-    page.locator('[data-action=fs-live-prepare-write]').click();page.locator('[data-action=fs-write-confirm]').click()
+    page.wait_for_function("probe.state().settings.projects[1].feishu.sheets.find(s=>s.live)?.rows.length===25")
+    page.evaluate("()=>probe.actions['fs-live-prepare-write']()");page.locator('[data-action=fs-write-confirm]').click()
     request=wait_read();assert json.loads(request.request.post_data)['action']=='write'
     changed=save('TableC');reply(changed,'新表不受旧同步影响')
-    page.wait_for_function("document.querySelector('.review-table')?.textContent.includes('新表不受旧同步影响')")
+    page.wait_for_function("probe.state().settings.projects.find(p=>p.id===probe.state().settings.selected).feishu.liveMeta?.title.includes('新表不受旧同步影响')")
     request.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':{'results':[{'status':'written'} for _ in range(20)]}}))
     page.wait_for_function("document.querySelector('#toast').textContent.includes('同步已暂停')")
     assert not pending and state()['projects'][1]['feishu']['liveMeta']['title']=='新表不受旧同步影响'
     passed('同步期间换链接只收尾已发出的首批，后续批次停止且不污染新表状态')
     assert not errors, errors
-    (OUT / 'result.json').write_text(json.dumps({'checks': checks, 'errors': errors, 'boundary': 'Same host isolated Edge; synthetic Feishu responses, quota failure and OPFS folder.'}, ensure_ascii=False, indent=2), encoding='utf-8')
+    (OUT / 'result.json').write_text(json.dumps({'ok': True, 'browser': browser.version, 'live': False, 'checks': checks, 'errors': errors, 'boundary': 'Same host isolated Edge; synthetic Feishu responses, quota failure and OPFS folder.'}, ensure_ascii=False, indent=2), encoding='utf-8')
     browser.close()
+except Exception:
+    (OUT/'failure.json').write_text(json.dumps({'ok':False,'checks':checks,'errors':errors,'traceback':traceback.format_exc()},ensure_ascii=False,indent=2),encoding='utf-8')
+    raise
 finally:
     server.shutdown(); server.server_close()

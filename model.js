@@ -33,7 +33,7 @@ export function applyFlow(task,kind,{note='',text='',fp='',changed=0,exportedAt=
 }
 // 补充品牌反馈：任何状态下都可追加原话，不改变送审状态（例如上传新版后品牌又补了意见）。
 export function addFeedbackNote(task,text){const s=String(text||'').trim();if(!s)throw Error('请先粘贴品牌反馈原话。');const f=task.flow||(task.flow=newFlow()),at=new Date().toISOString();f.feedback.push({at,round:f.round,text:s,extra:true});logFlow(f,`第 ${f.round} 轮 补充品牌反馈原话`);return f;}
-export function nextRound(prev){const f=flowOf(prev),n=newFlow(f.round+1);n.submissions=f.submissions;n.feedback=f.feedback;n.log=[...f.log];logFlow(n,`收到达人新版，开始第 ${n.round} 轮`);return n;}
+export function nextRound(prev){const f=flowOf(prev),n=newFlow(f.round+1);n.submissions=structuredClone(f.submissions);n.feedback=structuredClone(f.feedback);n.log=[...f.log];logFlow(n,`收到达人新版，开始第 ${n.round} 轮`);return n;}
 // 内容任务 = 一个达人在一个平台的一篇内容。发布信息记在任务上，品牌通过不等于已发布。
 export const PUBLISH_STATES=['待排期','已排期','已发布'];
 export const PUBLISH_TONE={'待排期':'amber','已排期':'gray','已发布':'dark'};

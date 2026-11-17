@@ -1,5 +1,6 @@
 // Private preparation adapters. Only fixed sources/commands are accepted; documents stay local.
 import fs from 'node:fs';
+import {cleanupManifest,cleanupError,assertCachePath,removeCacheJob,createCacheRetirement,matchesRetiredSource} from './cache-cleanup.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -174,6 +175,23 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
   }
   // Chunked conversion transport, scoped to a single page/project/source. No arbitrary filesystem paths.
   const conversions = path.join(root, 'conversions'), pending = new Map(), starts = new Map(), finishing = new Map(), unsavedConversions=new Map();
+  const retired=createCacheRetirement(root);
+  async function cleanupLibrary(value){
+    const manifest=cleanupManifest(value);retired.retire(manifest);
+    if(starts.size||finishing.size)throw cleanupError('CLEANUP_BUSY');
+    const removed=[];
+    if(fs.existsSync(conversions))for(const id of fs.readdirSync(conversions)){
+      if(!/^[a-f0-9-]{36}$/.test(id))continue;
+      const dir=assertCachePath(conversions,path.join(conversions,id)),file=assertCachePath(conversions,path.join(dir,'meta.json'));
+      if(!fs.existsSync(file))continue;let meta=JSON.parse(fs.readFileSync(file,'utf8'));
+      if(!matchesRetiredSource(meta,manifest,'office'))continue;
+      if(pending.has(id)||meta.mayStillRun||meta.error==='PROCESS_TIMEOUT')throw cleanupError('CLEANUP_BUSY');
+      meta=await recoverConversion(dir,meta);
+      if(pending.has(id)||meta.state==='converting'||unsavedConversions.has(id))throw cleanupError('CLEANUP_BUSY');
+      saveConversion(dir,{...meta,retired:true});removeCacheJob(conversions,id);removed.push(id);
+    }
+    return {removed};
+  }
   function saveConversion(dir,meta){const tmp=path.join(dir,'meta.tmp');fs.writeFileSync(tmp,JSON.stringify(meta),{mode:0o600});fs.renameSync(tmp,path.join(dir,'meta.json'));unsavedConversions.delete(meta.id);}
   async function recoverConversion(dir,meta){
     if(pending.has(meta.id))return meta;
@@ -207,20 +225,24 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
     if (!/^[a-f0-9-]{36}$/.test(body.jobId || '')) throw failure('CONVERSION_BINDING');
     const dir = path.join(conversions, body.jobId), meta = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8'));
     if (meta.token !== body.token || meta.projectId !== body.projectId || meta.sourceHash !== body.sourceHash) throw failure('CONVERSION_BINDING');
+    if(meta.retired)throw cleanupError('SOURCE_RETIRED');
+    retired.assert(meta.projectId,meta.libraryAssetKey);
     return {dir, meta};
   }
   async function officeAction(body) {
     if (body.action === 'begin') {
+      if(body.libraryAssetKey!==undefined&&(typeof body.libraryAssetKey!=='string'||!body.libraryAssetKey||body.libraryAssetKey.length>200))throw failure('CONVERSION_INPUT');
+      retired.assert(body.projectId,body.libraryAssetKey);
       const format = ({ppt: 'pptx', doc: 'docx', xls: 'xlsx'})[body.extension];
       if (!format || !/^[a-f0-9]{64}$/.test(body.sourceHash || '') || typeof body.projectId !== 'string' || !Number.isSafeInteger(body.size) || body.size <= 0) throw failure('CONVERSION_INPUT');
       if (body.size > 512 * 1024 * 1024) throw failure('CONVERSION_SIZE', '当前转换支持不超过512MB的单个原件；请在原软件拆分后导入，原件保留。');
-      const key = JSON.stringify([body.projectId, body.sourceHash, body.extension, body.size]);
+      const key = JSON.stringify([body.projectId, body.sourceHash, body.extension, body.size,body.libraryAssetKey||null]);
       if (starts.has(key)) return starts.get(key);
       const start = (async () => {
       if (fs.existsSync(conversions)) for (const entry of fs.readdirSync(conversions)) {
         if (!/^[a-f0-9-]{36}$/.test(entry)) continue;
         let old; try { old = JSON.parse(fs.readFileSync(path.join(conversions, entry, 'meta.json'), 'utf8')); } catch { continue; }
-        if (old.projectId === body.projectId && old.sourceHash === body.sourceHash && old.extension === body.extension && old.size === body.size) {
+        if (!old.retired && (old.libraryAssetKey||null)===(body.libraryAssetKey||null) && old.projectId === body.projectId && old.sourceHash === body.sourceHash && old.extension === body.extension && old.size === body.size) {
           old=await recoverConversion(path.join(conversions,entry),old);
           if(old.checkpointError)throw failure(old.checkpointError,'转换检查点尚未保存；原件和结果保留，存储恢复后将先核对结果。');
           if (old.state === 'converting' && !pending.has(old.id)) throw failure('CONVERSION_UNCERTAIN', '旧转换进程结果尚未确认，请核对原作业；不会重新转换。');
@@ -229,8 +251,9 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
         }
       }
       const runtime = await officeStatus(); if (!runtime.ready) throw failure('OFFICE_MISSING', '缺少转换器，请让连接 AI 调用 zhigao_plan_task，准备后继续当前资料。');
+      retired.assert(body.projectId,body.libraryAssetKey);
       const id = crypto.randomUUID(), dir = path.join(conversions, id); fs.mkdirSync(dir, {recursive: true});
-      const meta = {id, token: crypto.randomUUID(), projectId: body.projectId, sourceHash: body.sourceHash, size: body.size, format, extension: body.extension, state: 'uploading', received: 0};
+      const meta = {id, token: crypto.randomUUID(), projectId: body.projectId, ...(body.libraryAssetKey?{libraryAssetKey:body.libraryAssetKey}:{}),sourceHash: body.sourceHash, size: body.size, format, extension: body.extension, state: 'uploading', received: 0};
       fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta), {mode: 0o600}); fs.writeFileSync(path.join(dir, 'source.' + meta.extension), '');
       return {jobId: id, token: meta.token, state: meta.state, received: 0};
       })().finally(() => starts.delete(key)); starts.set(key, start); return start;
@@ -257,6 +280,7 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
       const finish = (async () => {
       if (meta.state !== 'uploading' || fs.statSync(source).size !== meta.size || await fileHash(source) !== meta.sourceHash) throw failure('INTEGRITY');
       const runtime = await officeStatus(); if (!runtime.ready) throw failure('OFFICE_MISSING');
+      retired.assert(meta.projectId,meta.libraryAssetKey);
       meta.originalInventory=legacyObjectInventory(fs.readFileSync(source));
       meta.state = 'converting'; meta.pid = process.pid; save();
       const job = (async () => {
@@ -264,7 +288,7 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
           const output = await convert(runtime.command, source, path.join(dir, 'out'), meta.format);
           if (fs.readFileSync(output).subarray(0, 2).toString() !== 'PK') throw failure('CONVERSION_FAILED');
           meta.output = path.basename(output); meta.outputHash = await fileHash(output); meta.outputSize = fs.statSync(output).size; meta.state = 'complete';
-        } catch (e) { meta.state = 'failed'; meta.error = e.code || 'CONVERSION_FAILED'; }
+        } catch (e) { meta.state = 'failed'; meta.error = e.code || 'CONVERSION_FAILED';if(e.mayStillRun)meta.mayStillRun=true; }
         if(meta.state==='complete')try{fs.writeFileSync(path.join(dir,'completed.json'),JSON.stringify({sourceHash:meta.sourceHash,outputHash:meta.outputHash,outputSize:meta.outputSize}),{mode:0o600});}catch{/* The output can still be verified after the owner exits. */}
         save();
       })().catch(e=>{meta.checkpointError=e.code||'CHECKPOINT_WRITE_FAILED';unsavedConversions.set(meta.id,{...meta});}).finally(() => pending.delete(meta.id)); pending.set(meta.id, job);
@@ -283,5 +307,5 @@ export function createChannelRuntime({root, platform = process.platform, arch = 
     }
     throw failure('INVALID_ACTION');
   }
-  return {larkBinary: bin, installLark, officeStatus, installOffice, officeSmoke, officeAction, busy: () => pending.size > 0 || starts.size > 0 || finishing.size > 0};
+  return {larkBinary: bin, installLark, officeStatus, installOffice, officeSmoke, officeAction, cleanupLibrary,busy: () => pending.size > 0 || starts.size > 0 || finishing.size > 0};
 }

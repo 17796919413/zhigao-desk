@@ -1,6 +1,8 @@
+import {activityOf,selectedActivity,projectForActivity,activitiesOf,activityName,addActivity} from './activities.js';
 import {digest, stableJSON} from './review-knowledge.js';
 import {parseLibraryFile} from './library-import.js';
 import {parseFeishuUrl} from './feishu.js';
+import {libraryIdentity} from './library-cleanup.js';
 
 const problem = (code, message) => Object.assign(Error(message), {code});
 async function officeRequest(body) {
@@ -12,13 +14,17 @@ async function officeRequest(body) {
 export function createTaskBridge(ctx, tools) {
   const current = () => ctx.state().settings.projects.find(p => p.id === ctx.state().settings.selected);
   async function context(request) {
-    const p = current(); if (!p || p.status === 'ended' || request.projectId && request.projectId !== p.id) throw problem('PROJECT_MISMATCH', '请先切换到原任务所属的有效品牌。');
-    const t = request.docId && ctx.state().tasks.find(t => t.id === request.docId && t.projectId === p.id);
+    const p = projectForActivity(current()); if (!p || p.status === 'ended' || request.projectId && request.projectId !== p.id) throw problem('PROJECT_MISMATCH', '请先切换到原任务所属的有效品牌。');
+    const t = request.docId && ctx.state().tasks.find(t => t.id === request.docId && t.projectId === p.id && activityOf(t) === selectedActivity(p));
     if (request.docId && !t) throw problem('TASK_NOT_FOUND', '当前品牌找不到原稿件。');
     if (request.operation === 'review' && !t) throw problem('TASK_NOT_FOUND', '请先取得待审稿件的 docId。');
     const list = request.libraryId ? (p.library || []).filter(d => d.id === request.libraryId) : (p.library || []).filter(d => d.active !== false);
     if (request.libraryId && !list.length) throw problem('TASK_NOT_FOUND', '当前品牌找不到该资料。');
     const requirements = [], originals = [], officeIds = [], mediaIds = [];let pendingMedia=false;
+    const continuationId=request.originalCall?.args?.continuationId;
+    const continuation=continuationId?await ctx.feishuAccessContext(continuationId,request.originalCall.name):null;
+    if(continuation?.action==='feishuSync'&&continuation.docId!==request.docId)throw problem('TASK_CHANGED','原同步稿件已变化。');
+    if(continuation&&request.originalCall.args.url!==p.feishu?.refined?.url)throw problem('TASK_CHANGED','审核表链接已变化。');
     const tableUrl=['zhigao_extract_feishu','zhigao_read_feishu_table'].includes(request.originalCall?.name)&&request.originalCall.args?.url || p.feishu?.refined?.url || p.feishu?.source?.url;
     if(request.clientCapabilities?.tools===false)requirements.push({id:'client:tools',state:'waiting_for_user',code:'CLIENT_CAPABILITY',userAction:{kind:'client',message:'当前客户端声明不支持工具调用，请切换到可使用知稿工具的客户端后继续。'}});
     const inspectSources = ['review', 'library', 'office'].includes(request.operation);
@@ -62,20 +68,20 @@ export function createTaskBridge(ctx, tools) {
       const cells=t.officeOriginal?(t.cells||[]).filter(c=>c.current!==t.base?.[c.id]||c.note):['office-pending','video'].includes(t.fmt)?[]:t.cells;
       target={id:t.id,round:t.flow?.round,hash,cells};
     }
-    const binding = {projectId: p.id, docId: t?.id || null, libraryId: request.libraryId || null,
-      operationFingerprint:await digest(stableJSON({projectId:p.id,target:target?{id:target.id,hash:target.hash,cells:target.cells}:null,originals:target?null:originals,table:['feishu_read','feishu_sync'].includes(request.operation)?tableUrl:null})),
-      fingerprint: await digest(stableJSON({projectId: p.id, target, originals, notes: p.notes, rules: p.rules, table: ['feishu_read', 'feishu_sync'].includes(request.operation) ? tableUrl : null}))};
-    if (current()?.id !== p.id) throw problem('PROJECT_MISMATCH', '检查期间品牌已切换，请重新检查。');
-    return {binding, requirements, officeIds, mediaIds,needsPreparation:!!(officeIds.length||t?.fmt==='office-pending'||pendingMedia||t?.fmt==='video'&&(t.videoPreparation?.state!=='complete'||!t.videoAnalysis)),officeDocId:t?.fmt==='office-pending'?t.id:null, videoDocId: t?.fmt === 'video' ? t.id : null,
+    const binding = {...(continuation?{continuationId}:{}),projectId: p.id, activityId:p.activityId, libraryIdentity:await libraryIdentity(p,p.activityId),docId: t?.id || null, libraryId: request.libraryId || null,
+      operationFingerprint:await digest(stableJSON({projectId:p.id,activityId:p.activityId,target:target?{id:target.id,hash:target.hash,cells:target.cells}:null,originals:target?null:originals,table:['feishu_read','feishu_sync'].includes(request.operation)?tableUrl:null})),
+      fingerprint: await digest(stableJSON({continuation,projectId: p.id, activityId:p.activityId,target, originals, notes: p.notes, rules: p.rules, table: ['feishu_read', 'feishu_sync'].includes(request.operation) ? tableUrl : null}))};
+    if (current()?.id !== p.id||selectedActivity(current())!==p.activityId) throw problem('PROJECT_MISMATCH', '检查期间品牌或活动已切换，请重新检查。');
+    return {binding, requirements, officeIds, mediaIds,...(continuation?{continuationAction:continuation.action,scopeRequest:continuation.scopeRequest}:{}),needsPreparation:!!(officeIds.length||t?.fmt==='office-pending'||pendingMedia||t?.fmt==='video'&&(t.videoPreparation?.state!=='complete'||!t.videoAnalysis)),officeDocId:t?.fmt==='office-pending'?t.id:null, videoDocId: t?.fmt === 'video' ? t.id : null,
       tableUrl: ['feishu_read', 'feishu_sync'].includes(request.operation) ? tableUrl : undefined};
   }
   async function convertLibrary(id, binding, docId=null, guard=async()=>{}) {
     await guard();
     const p = current(),draft=docId&&ctx.state().tasks.find(t=>t.id===docId&&t.projectId===p?.id), d = draft?{ingestion:{filename:draft.filename}}:p?.library?.find(d => d.id === id);
-    if (p?.id !== binding.projectId || !draft&&!d?.ingestion?.assetKey) throw problem('PROJECT_MISMATCH', '原品牌或资料已变化。');
+    if (p?.id !== binding.projectId || selectedActivity(p)!==(binding.activityId||'legacy') || !draft&&!d?.ingestion?.assetKey) throw problem('PROJECT_MISMATCH', '原品牌或资料已变化。');
     const file = draft?{...draft,originalFile:draft.originalFile||new File([draft.buffer],draft.filename)}:await ctx.getLibraryFile(d.ingestion.assetKey); if (file.conversion) return {libraryId: id, state: 'ready', reused: true};
     const source = file.originalFile, sourceHash = await digest(await source.arrayBuffer()), extension = d.ingestion.filename.split('.').pop().toLowerCase();
-    const started = await officeRequest({action: 'begin', projectId: p.id, sourceHash, extension, size: source.size});
+    const started = await officeRequest({action: 'begin', projectId: p.id, sourceHash, extension, size: source.size,...(!draft?{libraryAssetKey:d.ingestion.assetKey}:{})});
     const token = {jobId: started.jobId, token: started.token, projectId: p.id, sourceHash};
     for (let offset = started.received || 0; started.state === 'uploading' && offset < source.size;) {
       await guard();
@@ -117,7 +123,7 @@ export function createTaskBridge(ctx, tools) {
   }
   async function resume({request, binding, preparationId}) {
     const guard = async () => {
-      if (current()?.id !== binding.projectId) throw problem('PROJECT_MISMATCH', '品牌已切换，已停止后续步骤。');
+      if (current()?.id !== binding.projectId||selectedActivity(current())!==(binding.activityId||'legacy')) throw problem('PROJECT_MISMATCH', '品牌已切换，已停止后续步骤。');
       if (!preparationId) return;
       let response,value;
       try{response = await fetch('http://127.0.0.1:47821/page/tasks', {method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({action:'status',args:{taskId:preparationId}}),signal:AbortSignal.timeout(15000),credentials:'omit',redirect:'error'});value=await response.json();}
@@ -143,9 +149,9 @@ export function createTaskBridge(ctx, tools) {
       return {result, next: {tool: report.videoDocId ? 'zhigao_get_video_review_status' : 'zhigao_get_review_brief', args: {docId: request.docId}, instruction: '资料准备状态 complete 后，继续原稿的完整审阅。转换件的剩余阻断项不可跳过。'}};
     }
     if (request.operation === 'feishu_read') result = request.originalCall?.name==='zhigao_read_feishu_table'
-      ?await tools.zhigao_read_feishu_table({url:report.tableUrl})
+      ?await tools.zhigao_read_feishu_table({url:report.tableUrl,...(request.originalCall.args.continuationId?{continuationId:request.originalCall.args.continuationId}:{})})
       :await tools.zhigao_extract_feishu({...request.originalCall?.args,url: report.tableUrl,createDocument:false});
-    if (request.operation === 'feishu_sync') result = await tools.zhigao_prepare_feishu_sync();
+    if (request.operation === 'feishu_sync') result = await tools.zhigao_prepare_feishu_sync(request.originalCall?.args||{});
     if (request.operation === 'archive') result = await ctx.openSetup({section: 'folder'});
     return {result, next: {tool: 'zhigao_status', args: {}, instruction: '本步骤已续办。按原任务继续核对结果；配置准备不代表业务完成。'}};
   }

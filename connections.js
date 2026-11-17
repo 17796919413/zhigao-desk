@@ -1,6 +1,7 @@
 // 接入引导：状态来自实际连接或显式检查，教程按需展开。
 import {folderSupported} from './folder.js';
 import {WEB_VERSION,newer,checkUpdates,localUpdate} from './connector-updates.js';
+import {connectionPrompt,verifiedConnection} from './connection-status.js';
 
 export const FEISHU_COMMANDS = {
   install: 'npm install -g @larksuite/cli',
@@ -33,15 +34,15 @@ export function createConnections(ctx) {
     reconnecting: ['正在恢复连接', '连接暂时中断，正在自动重试。'],
     offline: ['暂时无法连接', '正在自动重试。请确认 AI 客户端已接通知稿、浏览器允许本地网络访问；也可点击“重新连接”。'],
     waiting: ['网页已连接 · 等待 AI', '网页已接通本机连接器。请在 AI 客户端调用一次知稿状态工具；有些客户端会在空闲时断开。'],
-    online: ['已连接', ctx.agent.clients.join('、')],
+    online: verifiedConnection(ctx.agent,ctx.project().id) ? ['AI 可用', `${ctx.agent.verification.client} 已成功读取当前品牌状态。`] : ['客户端在线 · 待验证', '客户端已接通连接器，尚未验证当前品牌。把接入指令发给 AI 完成检查。'],
     'other-tab': ['其他页面已连接', '另一个知稿标签页或浏览器正在连接。关闭旧页面后，这里会自动接入。'],
   })[ctx.agent.state] || ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'];
 
   function aiGuide() {
-    return `<p>也可把本工作台网址发给能执行本机命令的 Agent，说“帮我接通知稿”，由它按<a href="./AGENT_SETUP.md" target="_blank" rel="noopener">接入说明</a>配置当前客户端。</p><ol class="connect-steps"><li>在电脑安装 Node.js，再打开 PowerShell。<a href="https://nodejs.org/zh-cn" target="_blank" rel="noopener">获取 Node.js ↗</a></li><li>复制并运行连接器安装命令。${command('connector', ctx.installCommand())}</li><li>在目标客户端重新加载知稿 MCP（必要时重启客户端），再点击“连接 AI”。浏览器询问本地网络访问时，选择允许。</li></ol>
+    return `<p>将上方接入指令粘贴到正在使用的 AI 客户端。AI 会检查已有环境，并按<a href="./AGENT_SETUP.md" target="_blank" rel="noopener">接入说明</a>继续处理；需要本人操作时会给出入口。</p><details class="connect-more"><summary>手动配置与排障</summary><ol class="connect-steps"><li>确认电脑已有 Node.js。<a href="https://nodejs.org/zh-cn" target="_blank" rel="noopener">获取 Node.js ↗</a></li><li>复制并运行连接器安装命令。${command('connector', ctx.installCommand())}</li><li>在目标客户端重新加载知稿 MCP（必要时重启客户端），再点击“连接 AI”。浏览器询问本地网络访问时，选择允许。</li></ol>
       <p class="connect-note">模型在 AI 客户端中选择；审稿时保持工作台页面打开。</p>
       <details class="connect-more"><summary>其他客户端与 Mac</summary><p>支持 MCP 的客户端可手动添加 stdio 服务：命令填 <code>node</code>，参数填连接器的完整路径。</p><a href="./zhigao-connector.mjs" download="zhigao-connector.mjs">下载连接器</a><p>Mac：在终端运行以下命令，再重启客户端。</p>${command('mac', ctx.macCommand())}</details>
-      <details class="connect-more"><summary>连接后仍无法使用</summary><p>客户端找不到知稿工具：重启客户端或重新加载 MCP。连接器未运行：重新执行安装命令。浏览器拦截本地网络：在网站设置中允许本地网络访问，再刷新页面。</p></details>
+      <p>客户端找不到知稿工具：重新加载 MCP，只有客户端要求时才重启。连接器未运行：打开已配置的 AI 客户端。浏览器拦截本地网络：在网站设置中允许本地网络访问，再刷新页面。</p></details>
       <div class="connect-actions">${button('agent-on', ctx.agent.state === 'online' ? '重新连接' : '连接 AI')}${ctx.agent.state !== 'off' ? button('agent-off', '断开 AI') : ''}</div>`;
   }
   function feishuGuide() {
@@ -73,11 +74,11 @@ export function createConnections(ctx) {
     const fsDesc = feishu.state === 'ready' ? '飞书账号已就绪，关联表格后即可读取与同步。' : issue?.[2] || '连接飞书账号，读取表格并同步审稿进度。';
     const folderLabel = !folderSupported() ? '使用下载' : folderState === 'granted' ? '已关联' : folder ? '待授权' : '未设置';
     const folderDesc = folder ? folder.name : '按当前品牌保存原件、标红稿和意见单。';
-    return `<div class="connect-intro-row"><p class="connect-intro">按需连接，用到时再设置。</p>${button('connect-update-check',updateBusy?(update?.state==='downloading'?'更新中…':'检查中…'):'检查更新',updateBusy?'disabled':'')}</div>` +updatePanel()+
+    return `<section class="connect-start" aria-label="让 AI 帮你接入"><h3>把接入指令发给你的 AI</h3><p>复制后，粘贴到你正在使用的 AI 客户端并发送。需要登录或选择归档文件夹时，按提示完成即可。</p><div class="connect-actions">${ctx.btn('connect-copy-invitation','复制网址和接入指令','primary')}</div><details class="connect-more"><summary>查看接入指令</summary><textarea id="connect-invitation" aria-label="接入指令" readonly rows="7">${esc(connectionPrompt(location.href,p))}</textarea></details><p class="connect-note">日常打开已配置的 AI 客户端和工作台即可自动恢复连接。主动断开后需点击“连接 AI”。</p></section><div class="connect-intro-row"><p class="connect-intro">当前品牌：${esc(p.name||'未选择')}</p>${button('connect-update-check',updateBusy?(update?.state==='downloading'?'更新中…':'检查中…'):'检查更新',updateBusy?'disabled':'')}</div>` +updatePanel()+
       row('ai', 'AI 审稿', aiLabel, aiDesc, ['off','offline','reconnecting','waiting'].includes(ctx.agent.state) ? button('agent-on',ctx.agent.state==='off'?'连接 AI':'重新连接') : '', aiGuide()) +
       row('feishu', '飞书同步', fsLabel, fsDesc, button('connect-check', checking ? '检查中…' : '检查连接', checking ? 'disabled' : ''), feishuGuide() + (['connector','update','origin'].includes(feishu.state) ? button('connect-expand', '设置连接器', 'data-section="ai"') : '')) +
       row('folder', '本地归档', folderLabel, folderDesc, folderSupported() && p.id ? button(folder && folderState !== 'granted' ? 'connect-folder-grant' : 'connect-folder-pick', folder ? folderState === 'granted' ? '更换文件夹' : '授权文件夹' : '选择文件夹', `data-pid="${esc(p.id)}"`) : '', `<p>为“${esc(p.name)}”选择一个文件夹，并在浏览器提示中允许保存。审稿完成后会自动归档。</p><p>浏览器再次询问时，点击“授权文件夹”。暂不设置时，可从稿件列表导出文件。</p><p>本地归档请使用桌面版 Edge 或 Chrome；其他浏览器可下载导出文件。</p>`) +
-      `<details class="connect-more connect-basics"><summary>其他功能怎么使用</summary><p>上传稿件、品牌资料、口径、批注和导出文件，直接在工作台操作。AI 审稿和反馈提取需要连接 AI；飞书提炼还需登录飞书。</p><p>Word、Excel 和文字稿可审核并导出修改稿；图片、PDF、扫描页和视频可由具备相应看图、听审能力的 AI 审核，输出意见，原件保持不变。视频首次使用需准备本机媒体组件。</p><p>使用 AI：上传稿件 → 复制审稿提示词 → 粘贴到已连接的客户端 → 返回工作台查看结果。</p></details>`;
+      `<details class="connect-more connect-basics"><summary>其他功能怎么使用</summary><p>上传稿件、品牌资料、口径、批注和导出文件，直接在工作台操作。AI 审稿和反馈提取需要连接 AI；读取审核表还需登录飞书。</p><p>Word、Excel 和文字稿可审核并导出修改稿；图片、PDF、扫描页和视频可由具备相应看图、听审能力的 AI 审核，输出意见，原件保持不变。视频首次使用需准备本机媒体组件。</p><p>使用 AI：上传稿件 → 复制审稿提示词 → 粘贴到已连接的客户端 → 返回工作台查看结果。</p></details>`;
   }
   function refresh() {
     const host = document.querySelector('#connections-body');
@@ -144,6 +145,11 @@ export function createConnections(ctx) {
       setTimeout(()=>poll(0),1500);
     }
     if(action==='connect-update-refresh')location.reload();
+    if(action==='connect-copy-invitation'){
+      const value=connectionPrompt(location.href,ctx.project());
+      try{await navigator.clipboard.writeText(value);ctx.toast('已复制，粘贴到你的 AI 客户端并发送。');}
+      catch{const field=document.getElementById('connect-invitation');field.closest('details').open=true;field.value=value;field.focus();field.select();ctx.toast('请复制已选中的接入指令，粘贴到你的 AI 客户端。');}
+    }
     if (action === 'connect-copy') {
       const field = document.getElementById('connect-cmd-' + b.dataset.key);
       try { await navigator.clipboard.writeText(field.value); ctx.toast('已复制，在终端粘贴并运行。'); }

@@ -4,8 +4,9 @@ import functools,http.server,threading,json,os,io,zipfile,time,subprocess,socket
 from playwright.sync_api import sync_playwright
 from synthetic_fixtures import png_bytes,pdf_bytes
 from mcp_client_fixture import MCP
+from table_grid_fixture import grid_data
 ROOT=Path(__file__).resolve().parents[1]
-OUT=Path(os.environ.get('ZHIGAO_VERIFY_OUT',ROOT.parent/'_verify'/'table-library-20261112'/'browser'));OUT.mkdir(parents=True,exist_ok=True)
+OUT=Path(os.environ['ZHIGAO_VERIFY_OUT']);OUT.mkdir(parents=True,exist_ok=False)
 def zipped(files):
  b=io.BytesIO()
  with zipfile.ZipFile(b,'w') as z:
@@ -28,13 +29,19 @@ with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[
 backend=f'http://127.0.0.1:{port}'
 home=OUT/'isolated-home';home.mkdir(exist_ok=True)
 connector=OUT/'zhigao-connector.mjs';connector.write_text((ROOT/'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()',json.dumps(str(home))),encoding='utf-8')
-for name in ['media-runtime.mjs','media-worker.py']:shutil.copyfile(ROOT/name,OUT/name)
-env={**os.environ,'ZHIGAO_PORT':str(port),'ZHIGAO_AUTO_UPDATE':'0','ZHIGAO_ORIGINS':origin,'ZHIGAO_MEDIA_HOME':str(ROOT.parent/'_verify'/'assurance-20261110'/'fresh-runtime')}
+for name in ['media-runtime.mjs','media-worker.py','cache-cleanup.mjs']:shutil.copyfile(ROOT/name,OUT/name)
+env={**os.environ,'ZHIGAO_PORT':str(port),'ZHIGAO_AUTO_UPDATE':'0','ZHIGAO_REGISTER_URI':'0','ZHIGAO_ORIGINS':origin,'ZHIGAO_MEDIA_HOME':str(ROOT.parent/'_verify'/'assurance-20261110'/'fresh-runtime')}
 log=(OUT/'connector.log').open('w',encoding='utf-8');process=subprocess.Popen(['node',str(connector),'hub'],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
 checks=[];errors=[];client=None
 def passed(s):
  checks.append(s);print('PASS '+s,flush=True)
  (OUT/'progress.json').write_text(json.dumps({'completed':False,'checks':checks,'errors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
+def reparse_bundle(page):
+ # Current bundles deliberately drop unreferenced library assets. Keep a valid
+ # owning project/material so this exercises filename restoration, not orphans.
+ reparsed=page.evaluate("""async()=>{const {makeBundle,readBundle}=await import('/bundle.js'),{parseLibraryFile}=await import('/library-import.js'),file=new File(['交接后可重新解析的原文'],'交接原件.txt'),blob=await makeBundle({projects:[{id:'p',name:'合成项目',library:[{id:'l',title:'交接原件',ingestion:{assetKey:'retry',format:'text'}}]}],items:[],docs:[],media:[],libraryAssets:[{id:'retry',file:{filename:file.name,fmt:'text',originalFile:file}}]}),restored=(await readBundle(blob)).libraryAssets[0].file.originalFile,parsed=await parseLibraryFile(restored);return {name:restored.name,text:parsed.text,format:parsed.ingestion.format,state:parsed.ingestion.state};}""")
+ assert reparsed=={'name':'交接原件.txt','text':'交接后可重新解析的原文','format':'text','state':'ready'},reparsed
+ passed('交接包还原原件文件名，重新解析可识别格式并保留全文')
 try:
  for _ in range(100):
   try:
@@ -45,6 +52,11 @@ try:
   browser=pw.chromium.launch(channel='msedge',headless=True);context=browser.new_context(viewport={'width':1440,'height':1000})
   page=context.new_page();page.on('requestfailed',lambda r:print('REQUESTFAILED '+r.url+' '+str(r.failure),flush=True));page.on('pageerror',lambda e:errors.append(str(e)));page.goto(origin);page.wait_for_selector('#agent-chip')
   page.evaluate("async()=>{(await import('/agent.js')).stopAgent();}")
+  if os.environ.get('ZHIGAO_TEST_IDS')=='bundle-reparse':
+   reparse_bundle(page)
+   assert not errors,errors
+   (OUT/'result.json').write_text(json.dumps({'ok':True,'selected':['bundle-reparse'],'browser':browser.version,'live':False,'checks':checks,'errors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
+   context.close();browser.close();raise SystemExit(0)
   headers=['达人','达人类型','合作产品','发布平台','内容负责人','发布档期','大纲','脚本','初稿','品牌方反馈']
   rows=[[f'合成达人{i+1}','生活方式','星河杯','小红书','小林','2026-11-20','','/','',''] for i in range(76)]
   rows[0][0]='测试达人';rows[2][9]='品牌原话：请核对容量，不改真实体验。'
@@ -53,15 +65,16 @@ try:
   writes=[]
   def feishu(route):
    b=json.loads(route.request.post_data or '{}')
-   if b['action']=='readAll':data={'sheets':sheets,'title':'星河 · 内容审核表','revision':'r1','identity':'synthetic'}
+   if b['action']=='gridRead':data=grid_data(sheets,b,'星河 · 内容审核表')
+   elif b['action']=='readAll':data={'sheets':sheets,'title':'星河 · 内容审核表','revision':'r1','identity':'synthetic'}
    elif b['action']=='write':
-    writes.extend(b['writes']);data={'results':[{'status':'written'} for _ in b['writes']]}
+    writes.extend(b['writes']);data={'written':len(b['writes']),'rejected':0,'uncertain':0,'notAttempted':0,'results':[{'status':'written'} for _ in b['writes']]}
     for w in b['writes']:
      for sheet in sheets:
       if sheet['sheetId']==b['sheetId']:
        for row in sheet['rows']:
         if row[0]==w['key']['author']:row[w['column']]=w['value']
-   else:data={}
+   else:raise AssertionError('Unexpected synthetic table action: '+b['action'])
    route.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'data':data},ensure_ascii=False))
   context.route('**/page/feishu',feishu)
   projects=[{'id':'test','name':'星河 · 合成验收品牌','status':'active','notes':'','rules':[],'library':[], 'feishu':{'source':{'url':'https://example.feishu.cn/sheets/OldSource'},'refined':{'url':url},'sheets':[]}}]
@@ -69,14 +82,18 @@ try:
   page.reload();page.wait_for_selector('[data-page=feishu]');page.locator('[data-page=feishu]').click()
   assert page.locator('.review-link').count()==1 and page.locator('iframe').count()==0
   assert not any(x in page.locator('.content').inner_text() for x in ['原始资料表','精炼审核表','从原始表提取任务','已读取的子表'])
-  page.locator('[data-action=fs-show-table]').click();page.wait_for_selector('.review-table tbody tr')
-  assert page.locator('.review-table tbody tr').count()==50
-  page.locator('[data-action=table-next]').click();assert page.locator('.review-table tbody tr').count()==26
-  page.locator('#review-table-search').fill('合成达人76');assert page.locator('.review-table tbody tr').count()==1 and '合成达人76' in page.locator('.review-table tbody').inner_text()
-  page.locator('#review-table-search').fill('');page.locator('#fs-preview-sheet').select_option(label='视频合作 · 1 行');assert page.locator('.review-table tbody tr').count()==1
-  page.locator('#fs-preview-sheet').select_option(label='图文合作 · 76 行')
+  page.locator('[data-action=fs-show-table]').click();page.wait_for_selector('[data-grid-cell=A1]')
+  assert page.locator('.source-grid tbody tr').count()==40
+  assert page.locator('[data-grid-cell=A1]').inner_text()=='达人'
+  page.locator('[data-grid-next]').click();page.wait_for_selector('[data-grid-cell=A77]')
+  assert page.locator('.source-grid tbody tr').count()==37
+  assert page.locator('[data-grid-cell=A77]').inner_text()=='合成达人76'
+  page.locator('[data-grid-sheet]').select_option('sheetB');page.wait_for_function("document.querySelector('[data-grid-cell=A2]')?.textContent==='视频达人'")
+  assert page.locator('.source-grid tbody tr').count()==2
+  page.locator('[data-grid-sheet]').select_option('sheetA');page.wait_for_selector('[data-grid-cell=A40]')
+  assert page.locator('#review-table-search,[data-action=fs-ai-sync]').count()==0
   saved=page.evaluate('JSON.parse(localStorage.getItem("zhigao-settings-v1"))');assert saved['projects'][0]['feishu']['legacyLinks']['source']['url'].endswith('OldSource')
-  passed('双链接安全迁移为单审核表；原生表格、搜索、子表、全部行分页可用，无嵌入网页')
+  passed('双链接安全迁移为单审核表；按源表保留表头、40行分页至末行和子表切换，无旧搜索或全表同步入口')
   page.screenshot(path=str(OUT/'table-desktop.png'),full_page=True)
   page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(OUT/'table-mobile.png'),full_page=True);assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
   page.set_viewport_size({'width':1440,'height':1000})
@@ -103,11 +120,8 @@ try:
   passed('品牌资料刷新后保留；审核表与资料库桌面和390px手机无页面溢出')
   # Unsupported active sources must block completion; later disable them explicitly for the valid-source read checks.
   page.locator('.navbtn[data-page=home]').click()
-  page.locator('#file-input').set_input_files({'name':'【测试达人】图文大纲.txt','mimeType':'text/plain','buffer':'星河杯容量300毫升。'.encode()})
+  page.locator('#file-input').set_input_files({'name':'【测试达人】小红书图文大纲.txt','mimeType':'text/plain','buffer':'星河杯容量300毫升。'.encode()})
   page.wait_for_selector('.wb-row,[data-upload-choice]')
-  # The filename does not name the product; resolve the assignment explicitly.
-  if page.locator('[data-upload-choice]').count():
-   page.locator('[data-upload-choice]').select_option('0');page.locator('[data-action=wb-upload-assign]').click()
   page.wait_for_selector('.wb-row');doc_id=page.locator('.wb-row').first.get_attribute('data-doc-id')
   page.evaluate("async()=>{(await import('/agent.js')).startAgent();}")
   client=MCP(connector,env,log,page)
@@ -167,16 +181,24 @@ try:
    a=next(a for a in va if a['type']==kind);result=raw('zhigao_read_review_asset',{'docId':doc_id,'reviewToken':brief['reviewToken'],'assetId':a['id']});assert not result.get('isError'),result;assert any(c['type']==('image' if kind.endswith('frame') else 'audio') for c in result['content']),result
   assert not section(brief,'media')[0]['blockers']
   passed('真实本机视频完整准备，经新增 MCP 工具读取品牌视频画面及原声音频，原件绑定正确')
-  # Synthetic completed AI advice, used only to verify synchronization UI and the confirmation boundary.
-  page.evaluate("""async id=>{const s=JSON.parse(localStorage.getItem('zhigao-settings-v1')),sheet=s.projects[0].feishu.sheets.find(s=>s.liveId==='sheetA'),db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk',6);q.onsuccess=()=>r(q.result)});const read=(store,key)=>new Promise(r=>{const q=db.transaction(store).objectStore(store).get(key);q.onsuccess=()=>r(q.result)});const t=await read('tasks',id),it=await read('items',t.itemId),{rowKey}=await import('/feishu.js');Object.assign(it,{author:'测试达人',platform:'小红书',title:'星河杯',kind:'图文',feishu:{sheetId:sheet.id,key:rowKey(sheet,0)}});Object.assign(t,{stage:'大纲',fullReviewPending:false,ai:{changes:[],needsSupplement:false,assurance:{complete:true,projectRevision:s.projects[0].date||''}}});await new Promise((r,j)=>{const tx=db.transaction(['tasks','items'],'readwrite');tx.objectStore('tasks').put(t);tx.objectStore('items').put(it);tx.oncomplete=r;tx.onerror=()=>j(tx.error)});}""",doc_id)
-  page.reload();page.wait_for_selector('.wb-row');page.locator('.navbtn[data-page=feishu]').click();page.locator('[data-action=fs-ai-sync]').click();page.wait_for_selector('[data-action=fs-write-confirm]')
-  assert not writes and 'AI已审' in page.locator('.modal').inner_text()
-  page.locator('[data-action=fs-write-confirm]').click()
-  page.wait_for_function('JSON.parse(localStorage.getItem("zhigao-settings-v1")).projects[0].feishu.liveMeta.lastWrite?.written>0 && document.querySelector(".content").textContent.includes("已同步")')
-  assert any(w['value']=='AI已审 · 0处修改 · 待复核' for w in writes)
+  # Synthetic reviewed result: actual per-document sync UI, only current stage.
+  before_table=json.loads(json.dumps(sheets))
+  page.evaluate("""async id=>{const s=JSON.parse(localStorage.getItem('zhigao-settings-v1')),db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk',6);q.onsuccess=()=>r(q.result)});const read=(store,key)=>new Promise(r=>{const q=db.transaction(store).objectStore(store).get(key);q.onsuccess=()=>r(q.result)});const t=await read('tasks',id),it=await read('items',t.itemId);Object.assign(it,{author:'测试达人',platform:'小红书',title:'星河杯',kind:'图文'});Object.assign(t,{stage:'大纲',fullReviewPending:false,ai:{at:'synthetic-review',changes:[],needsSupplement:false,coverage:{complete:true},assurance:{complete:true,projectRevision:s.projects[0].activityRevisions?.legacy??s.projects[0].date??''}}});await new Promise((r,j)=>{const tx=db.transaction(['tasks','items'],'readwrite');tx.objectStore('tasks').put(t);tx.objectStore('items').put(it);tx.oncomplete=r;tx.onerror=()=>j(tx.error)});db.close();}""",doc_id)
+  page.reload();page.wait_for_selector('.wb-row')
+  assert not writes
+  page.locator(f'[data-action=wb-sync][data-id="{doc_id}"]').click()
+  page.wait_for_function("!document.querySelector('[data-action=wb-sync]')?.disabled")
+  sync_text=page.locator('.wb-row').inner_text()
+  (OUT/'sync-observed.json').write_text(json.dumps({'row':sync_text,'writes':writes},ensure_ascii=False,indent=2),encoding='utf-8')
+  assert '已同步' in sync_text,sync_text
+  assert len(writes)==1 and writes[0]['value']=='AI已审 · 0处修改' and writes[0]['column']==6,writes
+  changed=[(si,ri,ci) for si,sh in enumerate(sheets) for ri,row in enumerate(sh['rows']) for ci,v in enumerate(row) if v!=before_table[si]['rows'][ri][ci]]
+  assert changed==[(0,0,6)],changed
+  page.locator('.navbtn[data-page=feishu]').click();page.locator('[data-action=fs-show-table]').click()
+  page.wait_for_function("document.querySelector('[data-grid-cell=G2]')?.textContent==='AI已审 · 0处修改'")
   page.screenshot(path=str(OUT/'table-sync.png'),full_page=True)
-  passed('AI同步入口真实读取差异；页面确认前零写入，确认后写入正确单元格并回读更新原生表格（飞书API使用隔离夹具）')
-  page.locator('[data-action=fs-remove-link]').click();page.locator('[data-action=fs-remove-confirm]').click();page.wait_for_function('!document.querySelector(".review-table")');page.reload();page.wait_for_selector('.navbtn[data-page=feishu]');page.locator('.navbtn[data-page=feishu]').click();assert page.locator('#fs-url-refined').input_value()==''
+  passed('稿件旁手动同步只改变当前大纲阶段一格，其他两张表逐格保持；原表刷新显示实际回读值（合成API）')
+  page.locator('[data-action=fs-remove-link]').click();page.locator('[data-action=fs-remove-confirm]').click();page.wait_for_function('!document.querySelector(".source-grid")');page.reload();page.wait_for_selector('.navbtn[data-page=feishu]');page.locator('.navbtn[data-page=feishu]').click();assert page.locator('#fs-url-refined').input_value()==''
   passed('移除审核表解绑本地任务，刷新后旧双链接不会自动恢复')
   # Real browser file streams and handles in an isolated OPFS folder, without opening a user's folder picker.
   page.locator('.navbtn[data-page=rules]').click();page.evaluate('window.showDirectoryPicker=async()=>await navigator.storage.getDirectory()');page.locator('[data-action=folder-pick]').click();page.wait_for_function('document.querySelector(".folder-card").textContent.includes("已连接")')
@@ -190,11 +212,9 @@ try:
   bundle_check=page.evaluate("""async()=>{const p=JSON.parse(localStorage.getItem('zhigao-settings-v1')).projects[0],db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk',6);q.onsuccess=()=>r(q.result)}),all=await new Promise(r=>{const q=db.transaction('media').objectStore('media').getAll();q.onsuccess=()=>r(q.result)}),{makeBundle,readBundle}=await import('/bundle.js'),blob=await makeBundle({projects:[p],items:[],docs:[],media:[],libraryAssets:all.filter(a=>p.library.some(d=>d.ingestion.assetKey===a.id))}),b=await readBundle(blob);return {count:b.libraryAssets.length,pending:b.projects[0].library.find(d=>d.ingestion.format==='video').ingestion.state,hasText:b.libraryAssets.some(a=>a.file.extractedText?.endsWith('末尾唯一标记：材料没有截断。'))}}""")
   assert bundle_check=={'count':7,'pending':'pending','hasText':True},bundle_check
   passed('交接包包含全部格式原件与完整正文；异机视频恢复为待准备，不能复用本机处理凭据')
-  reparsed=page.evaluate("""async()=>{const {makeBundle,readBundle}=await import('/bundle.js'),{parseLibraryFile}=await import('/library-import.js'),file=new File(['交接后可重新解析的原文'],'交接原件.txt'),blob=await makeBundle({projects:[],items:[],docs:[],media:[],libraryAssets:[{id:'retry',file:{filename:file.name,fmt:'text',originalFile:file}}]}),restored=(await readBundle(blob)).libraryAssets[0].file.originalFile,parsed=await parseLibraryFile(restored);return {name:restored.name,text:parsed.text,format:parsed.ingestion.format,state:parsed.ingestion.state};}""")
-  assert reparsed=={'name':'交接原件.txt','text':'交接后可重新解析的原文','format':'text','state':'ready'},reparsed
-  passed('交接包还原原件文件名，重新解析可识别格式并保留全文')
+  reparse_bundle(page)
   assert not errors,errors
-  (OUT/'result.json').write_text(json.dumps({'checks':checks,'errors':errors,'videoStatus':status,'screenshots':[p.name for p in OUT.glob('*.png')]},ensure_ascii=False,indent=2),encoding='utf-8')
+  (OUT/'result.json').write_text(json.dumps({'ok':True,'browser':browser.version,'live':False,'checks':checks,'errors':errors,'videoStatus':status,'screenshots':[p.name for p in OUT.glob('*.png')]},ensure_ascii=False,indent=2),encoding='utf-8')
   context.close();browser.close()
 except Exception:
  try:

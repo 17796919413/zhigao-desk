@@ -8,7 +8,11 @@ export function numericDisplay(raw,formatId,custom,date1904=false){
  if(format&&/^[#0,]+(?:\.0+)?%?$/.test(format)){const decimals=(format.match(/\.(0+)/)?.[1]||'').length;return {text:(n*(format.endsWith('%')?100:1)).toLocaleString('en-US',{minimumFractionDigits:decimals,maximumFractionDigits:Math.min(decimals,20),useGrouping:format.includes(',')})+(format.endsWith('%')?'%':'')};}
  if(format==='0.00E+00')return {text:n.toExponential(2).toUpperCase().replace(/E([+-])(\d)$/,'E$10$2')};
  // Plain calendar/time formats are interpreted in the workbook date system.
- if(format&&/^[ymdhs/:.\-\s]+(?:AM\/PM)?$/i.test(format)&&/[ydhs]/i.test(format)){
+ // Only calendar separators may be unwrapped: in numeric formats, escaped dots
+ // are literal output and must not become decimal placeholders.
+ const calendarFormat=format?.replace(/\\([/:.\- ])/g,'$1').replace(/"([/:.\- ]+)"/g,'$1');
+ if(calendarFormat&&/^[ymdhs/:.\-\s]+(?:AM\/PM)?$/i.test(calendarFormat)&&/[ydhs]/i.test(calendarFormat)){
+  const format=calendarFormat;
   if(n<0||n>2958465||!date1904&&Math.floor(n)===60)return {text:String(raw),blocker:'日期序列无法确认显示值'};
   const day=Math.floor(n),ms=Math.round((n-day)*86400000),d=new Date(Date.UTC(date1904?1904:1899,date1904?0:11,date1904?1:31)+(day-(!date1904&&day>=60?1:0))*86400000+ms);
   const pad=(v,l=2)=>String(v).padStart(l,'0'),month=d.getUTCMonth()+1,hour=d.getUTCHours();

@@ -2,6 +2,7 @@ import {reviewNeedsAttention} from './review-summary.js';
 // 飞书表格：链接校验、粘贴表格解析、字段自动对应、任务与行匹配、同步核对。纯函数，不访问网络。
 // 生成待人工确认的同步差异；反馈仅可更新本机上次写入且未被他人修改的值。
 import {currentDocumentForStage,reviewStagesFor,flowOf} from './model.js';
+import {activitiesOf,activityOf} from './activities.js';
 const TAB=String.fromCharCode(9),NL=String.fromCharCode(10),CR=String.fromCharCode(13);
 
 // 只接受飞书 / Lark 的 https 链接，避免把任意网页嵌进工作台。
@@ -19,15 +20,58 @@ export function parseTable(text){
 }
 
 export const FIELDS=[
- {k:'author',label:'达人',need:true},{k:'platform',label:'发布平台'},{k:'kind',label:'内容形式'},{k:'type',label:'达人类型 / 方向'},{k:'title',label:'内容标题 / 产品'},{k:'date',label:'发布档期'},
+ {k:'author',label:'达人',need:true},{k:'platform',label:'发布平台'},{k:'activity',label:'活动'},{k:'kind',label:'内容形式'},{k:'type',label:'达人类型 / 方向'},{k:'title',label:'内容标题 / 产品'},{k:'date',label:'发布档期'},
  {k:'outline',label:'大纲'},{k:'script',label:'脚本'},{k:'draft',label:'初稿'},{k:'publish',label:'发布情况'},{k:'feedback',label:'品牌方反馈'},{k:'owner',label:'内容负责人'}
 ];
 const SYN={author:['达人','达人名称','达人昵称','达人id','达人账号','博主','kol','账号'],platform:['发布平台','平台'],kind:['内容形式','形式','内容类型','稿件类型'],type:['达人类型','达人方向','方向','账号类型','达人分类'],title:['内容标题','标题','主题','选题','内容方向','合作产品','产品','寄品'],date:['发布档期','发布日期','发布时间','档期','排期'],outline:['大纲'],script:['脚本'],draft:['初稿'],publish:['发布情况','发布链接','发布状态','抖红发布情况'],feedback:['品牌方反馈','品牌反馈','甲方反馈','客户反馈'],owner:['内容负责人','内容侧负责人','负责人']};
-const normHead=h=>String(h||'').replace(/[\s*＊:：()（）【】\[\]]/g,'').toLowerCase();
+export const ACTIVITY_HEADERS=['活动','活动名称','项目活动','campaign'];
+SYN.activity=ACTIVITY_HEADERS;
+const normHead=h=>String(h||'').normalize('NFKC').replace(/[\s*＊:：()（）【】\[\]]/g,'').toLowerCase();
+export const activityCellKey=s=>String(s??'').normalize('NFKC').trim().toLowerCase();
+export function activityColumnChoice(sheet,column){
+ const headers=sheet.headers||[],header=headers[column];
+ if(!Number.isInteger(column)||column<0||column>=headers.length||typeof header!=='string'||!normHead(header))throw Error('请选择活动对应的列。');
+ if(headers.filter(h=>normHead(h)===normHead(header)).length!==1)throw Error('所选表头重复，请在飞书区分列名后重新匹配。');
+ if(Object.entries({...autoMap(headers),...sheet.map}).some(([field,i])=>field!=='activity'&&i===column))throw Error('这列已用于其他字段，请选择活动列。');
+ return {header};
+}
+export function activityMappingError(sheet){
+ if(!sheet.activityMapping)return '';
+ try{const header=sheet.activityMapping.header;if(typeof header!=='string')throw Error();activityColumnChoice(sheet,(sheet.headers||[]).indexOf(header));return '';}
+ catch{return '已选活动列已变化，请点击“匹配稿件”重新选择。';}
+}
+export function activityColumns(sheet){
+ if(sheet.activityMapping)return activityMappingError(sheet)?[]:[sheet.headers.indexOf(sheet.activityMapping.header)];
+ return (sheet.headers||[]).flatMap((h,i)=>ACTIVITY_HEADERS.includes(normHead(h))?[i]:[]);
+}
+// Keep a confirmed header by identity across column moves. A missing or repeated
+// header stays invalid instead of silently falling back to a legacy row key.
+export function refreshSheetMap(headers,previous={}){
+ const map=autoMap(headers);
+ for(const [field,i] of Object.entries(previous.map||{})){
+  if(field==='activity'||i<0)continue;
+  const h=previous.headers?.[i],indices=headers.flatMap((x,n)=>x===h?[n]:[]);
+  if(indices.length===1)map[field]=indices[0];
+ }
+ if(previous.activityMapping)map.activity=activityColumns({headers,map,activityMapping:previous.activityMapping})[0]??-1;
+ return map;
+}
+export function rowInActivity(item,sheet,row,project){
+ if(activityMappingError(sheet))return false;
+ const columns=activityColumns(sheet);if(!columns.length)return !(sheet.map?.activity>=0);
+ if(columns.length!==1||sheet.map?.activity!==columns[0])return false;
+ const value=activityCellKey(sheet.rows[row]?.[columns[0]]);if(!value)return false;
+ const matches=activitiesOf(project).filter(a=>activityCellKey(a.id)===value||activityCellKey(a.name)===value);
+ return matches.length===1&&matches[0].id===activityOf(item);
+}
+export function rowIdentity(sheet,row){
+ const names=['author','platform','title',...(sheet.map.activity>=0?['activity']:[])];
+ return {key:Object.fromEntries(names.map(k=>[k,cellOf(sheet.rows[row],sheet.map,k)])),keyColumns:Object.fromEntries(names.map(k=>[k,Number.isInteger(sheet.map[k])?sheet.map[k]:-1])),...(sheet.activityMapping&&!activityMappingError(sheet)&&sheet.map.activity===activityColumns(sheet)[0]?{activityMapping:{header:sheet.activityMapping.header,column:sheet.map.activity}}:{})};
+}
 // 每个字段挑得分最高的列，每列只用一次；“达人类型”不能当成达人或内容形式。
 export function autoMap(headers){
  const cand=[];
- for(const f of Object.keys(SYN))headers.forEach((h,i)=>{const n=normHead(h);if(!n)return;const exact=SYN[f].indexOf(n);let score=exact>=0?100-exact:0;if(!score&&SYN[f].some(s=>s.length>=2&&n.includes(s))){if((f==='kind'||f==='title')&&n.includes('达人'))return;if(f==='author'&&/类型|方向/.test(n))return;score=10;}if(score)cand.push({f,i,score});});
+ for(const f of Object.keys(SYN))headers.forEach((h,i)=>{const n=normHead(h);if(!n)return;const exact=SYN[f].indexOf(n);let score=exact>=0?100-exact:0;if(!score&&f!=='activity'&&SYN[f].some(s=>s.length>=2&&n.includes(s))){if((f==='kind'||f==='title')&&n.includes('达人'))return;if(f==='author'&&/类型|方向/.test(n))return;score=10;}if(score)cand.push({f,i,score});});
  cand.sort((a,b)=>b.score-a.score||a.i-b.i);
  const map=Object.fromEntries(Object.keys(SYN).map(f=>[f,-1])),used=new Set();
  for(const c of cand)if(map[c.f]<0&&!used.has(c.i)){map[c.f]=c.i;used.add(c.i);}
@@ -48,8 +92,9 @@ export function dateParts(cell,year=new Date().getFullYear()){
 }
 export const dateISO=(cell,year=new Date().getFullYear())=>dateParts(cell,year)?.iso||'';
 
-// 绑定按“达人 | 平台 | 标题”识别行，不按行号（行号会因增删行变化）。
-export function rowKey(sheet,i){const r=sheet.rows[i]||[];return[normName(cellOf(r,sheet.map,'author')),normName(cellOf(r,sheet.map,'platform')),normName(cellOf(r,sheet.map,'title'))].join('|');}
+// Preserve legacy keys for tables without an activity column. Explicit activity
+// is part of row identity and write ownership; never infer it from a row number.
+export function rowKey(sheet,i){const r=sheet.rows[i]||[],base=[normName(cellOf(r,sheet.map,'author')),normName(cellOf(r,sheet.map,'platform')),normName(cellOf(r,sheet.map,'title'))].join('|');return base+(sheet.map.activity>=0?'|activity:'+JSON.stringify(activityCellKey(cellOf(r,sheet.map,'activity'))):'');}
 export function locate(sheet,b){if(!sheet||!b)return{row:null,why:'missing'};const hit=sheet.rows.map((_,i)=>i).filter(i=>rowKey(sheet,i)===b.key);if(hit.length===1)return{row:hit[0]};if(hit.length>1)return{row:null,why:'ambiguous'};return{row:null,why:'notfound'};}
 export function candidates(item,sheets){
  const ni=normName(item.author),nt=normName(item.title),out=[];if(!ni)return out;
@@ -62,7 +107,7 @@ export const SYNC_FIELDS=['outline','script','draft','date','publish','feedback'
 // 工作台这一侧“应该是什么”：✅ 只来自人工记录的品牌通过；图文没有脚本记为“/”。
 export function itemValues(item,docs,project){
  const v={};
- for(const [f,stage] of Object.entries(STAGE_FIELD)){if(!reviewStagesFor(item.kind).includes(stage)){v[f]='/';continue;}const d=currentDocumentForStage(docs,stage);v[f]=d&&flowOf(d).state==='passed'?'✅':d?.ai?(reviewNeedsAttention(d,project)?'审核未完成 · ':'AI已审 · ')+(d.ai.changes||[]).length+'处修改 · 待复核':'';}
+ for(const [f,stage] of Object.entries(STAGE_FIELD)){if(!reviewStagesFor(item.kind).includes(stage)){v[f]='/';continue;}const d=currentDocumentForStage(docs,stage);v[f]=d&&flowOf(d).state==='passed'?'✅':d?.ai?(reviewNeedsAttention(d,project)?'审核未完成 · ':'AI已审 · ')+(d.ai.changes||[]).length+'处修改':'';}
  const pb=item.publish||{};v.date=pb.date||'';v.publish=pb.status==='已发布'?'✅':'';
  const fb=docs.flatMap(d=>(d.fbItems||[]).filter(x=>x.status==='done'&&String(x.text||'').trim()).map(x=>({...x,stage:d.stage}))).sort((a,b)=>String(a.at).localeCompare(String(b.at)));
  v.feedback=fb.map(x=>`【${x.stage}】${x.text}`).join('；');v.feedbackText=fb.map(x=>x.text).join('；');
@@ -79,7 +124,7 @@ export function compareCell(f,feishu,ours,raw=''){
 // 汇总所有已绑定任务的核对结果；多个任务共用一行且数值不同时，一律改为人工确认。
 export function buildPlan(list,docsOf,sheets,project){
  const entries=[];
- for(const it of list){const b=it.feishu;if(!b)continue;const s=sheets.find(x=>x.id===b.sheetId);if(!s){entries.push({it,error:'子表快照已删除，请重新绑定'});continue;}const loc=locate(s,b);if(loc.row==null){entries.push({it,sheet:s,error:loc.why==='ambiguous'?'快照里有多行同名记录，请重新绑定':'在最新快照里找不到这一行（可能改了名或删除了），请重新绑定'});continue;}const v=itemValues(it,docsOf(it),project),r=s.rows[loc.row],cells=[];for(const f of SYNC_FIELDS){if(s.map[f]<0)continue;const feishu=r[s.map[f]]||'',c=compareCell(f,feishu,v[f],f==='feedback'?v.feedbackText:'');cells.push({f,header:s.headers[s.map[f]],feishu,ours:v[f],...c});}entries.push({it,sheet:s,row:loc.row,cells});}
+ for(const it of list){const b=it.feishu;if(!b)continue;const s=sheets.find(x=>x.id===b.sheetId);if(!s){entries.push({it,error:'子表快照已删除，请重新绑定'});continue;}const loc=locate(s,b);if(loc.row==null){entries.push({it,sheet:s,error:loc.why==='ambiguous'?'快照里有多行同名记录，请重新绑定':'在最新快照里找不到这一行（可能改了名或删除了），请重新绑定'});continue;}if(project&&!rowInActivity(it,s,loc.row,project)){entries.push({it,sheet:s,error:'表格活动与稿件不一致，请重新匹配'});continue;}const v=itemValues(it,docsOf(it),project),r=s.rows[loc.row],cells=[];for(const f of SYNC_FIELDS){if(s.map[f]<0)continue;const feishu=r[s.map[f]]||'',c=compareCell(f,feishu,v[f],f==='feedback'?v.feedbackText:'');cells.push({f,header:s.headers[s.map[f]],feishu,ours:v[f],...c});}entries.push({it,sheet:s,row:loc.row,cells});}
  // 只有连接器提供的最近写入历史与在线值完全一致，反馈格才允许进入人工确认的覆盖计划。
  for(const e of entries)if(e.cells&&e.sheet.live)for(const c of e.cells){
   if(!['feedback','outline','script','draft'].includes(c.f)||c.status!=='conflict'||!c.ours)continue;

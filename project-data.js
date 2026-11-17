@@ -1,9 +1,20 @@
 import {DOC_KINDS} from './brand.js';
+import {planLibraryCleanup,planConnectorCleanup} from './library-cleanup.js';
+import {activityOf,selectedActivity,validateScope,activitiesOf,activityBasis,activityRevision,projectForActivity} from './activities.js';
 
 const stable = value => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
 export const sameData = (a, b) => stable(a) === stable(b);
-export const projectSnapshot = p => structuredClone({notes:p.notes||'', library:p.library||[], rules:p.rules||[]});
+export const projectSnapshot = p => structuredClone({notes:p.notes||'', library:p.library||[], rules:p.rules||[],...(p.activities?{activities:p.activities}:{}),...(p.activityRevisions?{activityRevisions:p.activityRevisions}:{})});
+export function reviseActivityBasis(before,next){
+  const revisions={};
+  for(const {id} of activitiesOf(next)){
+    const exists=activitiesOf(before).some(a=>a.id===id);
+    const changed=!exists||!sameData(activityBasis(before,id),activityBasis(next,id));
+    revisions[id]=changed?crypto.randomUUID():activityRevision(before,id);
+  }
+  return {...next,activityRevisions:revisions};
+}
 // A name is not an identity. Conflicting source versions stay in a separate project.
 export function planProjectImport(existing,incoming,makeId=()=>crypto.randomUUID()){
  const projects=structuredClone(existing),mapping=new Map(),conflicts=[];
@@ -17,19 +28,24 @@ export function planProjectImport(existing,incoming,makeId=()=>crypto.randomUUID
 }
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const revision = item => {const {history, ...previous}=item; return [...(history||[]), previous];};
-const content = item => {const {history,updated,created,...rest}=item;return rest;};
+const content = item => {const {history,updated,created,...rest}=item;return {...rest,activityId:activityOf(item)};};
 
 // Build a candidate without mutating live data; validation errors discard the entire batch.
 export function prepareProjectUpdate(project, args) {
   if (!['notes','library','rules'].some(k => own(args,k))) throw Error('请提供资料或口径。');
-  const p=structuredClone(project), snapshot=projectSnapshot(project), now=new Date().toISOString();
+  let p=structuredClone(project);const snapshot=projectSnapshot(project), now=new Date().toISOString();
   if(args.expected!==undefined){
     if(!args.expected||typeof args.expected!=='object'||Array.isArray(args.expected))throw Error('写前数据格式不正确。');
-    for(const k of Object.keys(snapshot))if(own(args.expected,k)&&!sameData(args.expected[k],snapshot[k]))throw Error('项目资料已变化，请重新读取后保存。');
+    const expectedSnapshot=args.activityId!==undefined?projectSnapshot(projectForActivity(project,validateScope(project,args.activityId))):snapshot;
+    for(const k of Object.keys(expectedSnapshot))if(own(args.expected,k)&&!sameData(args.expected[k],expectedSnapshot[k]))throw Error('项目资料已变化，请重新读取后保存。');
   }
+  const target=args.activityId??selectedActivity(project);validateScope(project,target);
+  if(args.expected?.activityId!==undefined&&args.expected.activityId!==target)throw Error('写前资料属于另一活动，请重新读取当前活动后保存。');
+  if(target==='*')throw Error('笔记与更新入口需绑定具体活动。');
   if(own(args,'notes')){
     if(typeof args.notes!=='string'||args.notes.length>200000)throw Error('笔记需为文本，且不超过20万字。');
-    p.notes=args.notes;
+    if(target==='legacy')p.notes=args.notes;
+    else p.activities=p.activities.map(a=>a.id===target?{...a,notes:args.notes}:a);
   }
   const added=[],updated=[],unchanged=[];
   for(const key of ['library','rules']){
@@ -46,6 +62,7 @@ export function prepareProjectUpdate(project, args) {
       if(!title)throw Error('请填写标题。');
       let old=raw.id?p[key].find(x=>x.id===raw.id):null;
       if(raw.id&&!old)throw Error('需要更新的条目已不存在。');
+      if(old&&activityOf(old)!=='*'&&activityOf(old)!==target)throw Error('不能从当前活动更新其他活动的资料，请先切换活动。');
       for(const flag of ['active','enabled','allowDuplicate'])if(own(raw,flag)&&typeof raw[flag]!=='boolean')throw Error('启用状态需为布尔值。');
       let fields;
       if(key==='library'){
@@ -68,16 +85,18 @@ export function prepareProjectUpdate(project, args) {
         if(old?.type==='builtin'&&!fields.find&&fields.description!==old.description)fields.type='custom';
         if(fields.action==='replace'&&!fields.find)throw Error('建议替换需填写查找词。');
       }
+      const activityId=validateScope(project,raw.activityId??(old?activityOf(old):target));
       if(!old){
-        const matches=p[key].filter(x=>x.title===title);
+        const matches=p[key].filter(x=>x.title===title&&activityOf(x)===activityId);
         const identical=matches.find(x=>Object.entries(fields).every(([k,v])=>sameData(x[k]??(k==='supersedes'?[]:k==='find'||k==='replace'||k==='source'?'':k==='action'?'check':undefined),v)));
         if(identical&&!raw.allowDuplicate){unchanged.push(identical.id);continue;}
         if(matches.length&&!raw.allowDuplicate)throw Error('已有同名条目，请按 id 更新或选择新增一份。');
       }
-      const next={...(old||{}),...fields,id:old?.id||(key==='rules'?'custom-':'')+crypto.randomUUID()};
+      const next={...(old||{}),...fields,activityId,id:old?.id||(key==='rules'?'custom-':'')+crypto.randomUUID()};
       if(old&&sameData(content(old),content(next))){unchanged.push(old.id);continue;}
       next.updated=now;
-      if(old)next.history=revision(old);else next.created=now;
+      if(old&&key==='rules')next.history=revision(old);else if(!old)next.created=now;
+      if(key==='library')delete next.history;
       if(old){p[key][p[key].indexOf(old)]=next;updated.push(next.id);}else{p[key].push(next);added.push(next.id);}
     }
   }
@@ -86,11 +105,11 @@ export function prepareProjectUpdate(project, args) {
     if(visiting.has(id))throw Error('口径替代关系不能形成循环。');
     if(done.has(id))return;
     const r=byId.get(id);if(!r)throw Error('被替代的口径已不存在。');
-    visiting.add(id);for(const prev of r.supersedes||[])visit(prev);visiting.delete(id);done.add(id);
+    visiting.add(id);for(const prev of r.supersedes||[]){const old=byId.get(prev);if(old&&activityOf(old)!=='*'&&activityOf(old)!==activityOf(r))throw Error('口径不能替代其他活动的专属要求。');visit(prev);}visiting.delete(id);done.add(id);
   }
   for(const id of byId.keys())visit(id);
   const changed=!sameData(snapshot,projectSnapshot(p));
-  if(changed)p.date=now;
+  if(changed){p.date=now;p=reviseActivityBasis(project,p);}
   return {project:p,added,updated,unchanged,changed};
 }
 
@@ -98,11 +117,16 @@ export function prepareProjectUpdate(project, args) {
 export function persistProjectUpdate(settings, next, storage=localStorage) {
   const key='zhigao-settings-v1', before=storage.getItem(key), saved=before?JSON.parse(before):null;
   const current=settings.projects.find(p=>p.id===next.id), persisted=saved?.projects?.find(p=>p.id===next.id);
+  next=reviseActivityBasis(current,next);
   if(saved&&(!persisted||!sameData(projectSnapshot(current),projectSnapshot(persisted))))throw Error('项目资料已变化，请刷新后保存。');
   const candidate=structuredClone(saved||settings);
   candidate.selected=settings.selected;
   const index=candidate.projects.findIndex(p=>p.id===next.id);
   candidate.projects[index]={...candidate.projects[index],...projectSnapshot(next),...(next.date?{date:next.date}:{})};
+  const cleanup=planLibraryCleanup(current,next);
+  if(cleanup)candidate.libraryCleanup=[...(candidate.libraryCleanup||[]),cleanup];
+  const connectorCleanup=planConnectorCleanup(current,next);
+  if(connectorCleanup)candidate.connectorCleanup=[...(candidate.connectorCleanup||[]),connectorCleanup];
   const serialized=JSON.stringify(candidate);let wrote=false;
   try{
     storage.setItem(key,serialized);wrote=true;

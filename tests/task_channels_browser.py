@@ -24,7 +24,7 @@ threading.Thread(target=server.serve_forever,daemon=True).start();origin=f'http:
 with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
 backend=f'http://127.0.0.1:{port}';home=OUT/'isolated-home';home.mkdir(exist_ok=True)
 connector=OUT/'zhigao-connector.mjs';connector.write_text((ROOT/'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()',json.dumps(str(home))),encoding='utf-8')
-for name in ['media-runtime.mjs','media-worker.py']:shutil.copyfile(ROOT/name,OUT/name)
+for name in ['media-runtime.mjs','media-worker.py','cache-cleanup.mjs']:shutil.copyfile(ROOT/name,OUT/name)
 fake=OUT/'synthetic-lark.mjs';fake.write_text('''import fs from 'node:fs';import path from 'node:path';import {fileURLToPath} from 'node:url';
 const root=path.dirname(fileURLToPath(import.meta.url)),args=process.argv.slice(2),ok=data=>console.log(JSON.stringify({ok:true,identity:'user',data}));
 fs.appendFileSync(path.join(root,'calls.jsonl'),JSON.stringify(args.map((x,i)=>args[i-1]==='--device-code'?'REDACTED':x))+'\\n');

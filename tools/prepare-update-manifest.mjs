@@ -16,14 +16,14 @@ const files={};
 const taskModules={};
 const channelPath=path.join(root,'channel-runtime.mjs'),extractSource=fs.readFileSync(path.join(root,'tools','extract-office.ps1'),'utf8').replaceAll('\r\n','\n');
 fs.writeFileSync(channelPath,fs.readFileSync(channelPath,'utf8').replace(/^const OFFICE_EXTRACT_SCRIPT = .*;$/m,()=>"const OFFICE_EXTRACT_SCRIPT = '"+Buffer.from(extractSource).toString('base64')+"';").replaceAll('\r\n','\n'));
-for(const name of ['task-runtime.mjs','channel-runtime.mjs','task-channels.mjs']){
+for(const name of ['task-runtime.mjs','channel-runtime.mjs','task-channels.mjs','grid-runtime.mjs','cache-cleanup.mjs']){
  const text=fs.readFileSync(path.join(root,name),'utf8').replaceAll('\r\n','\n');
  taskModules[name]=Buffer.from(text).toString('base64');
 }
 if(!/^const TASK_MODULES = .*;$/m.test(data))throw Error('Missing task module anchor');
 data=data.replace(/^const TASK_MODULES = .*;$/m,'const TASK_MODULES = '+JSON.stringify(taskModules)+';');
 manifest.taskPreparation={protocol:1,guide:'./TASK_CHANNELS.md',tools:['zhigao_plan_task','zhigao_confirm_task','zhigao_task_status','zhigao_resume_task','zhigao_cancel_task','zhigao_recover_task'],entry:'Existing read/review tools automatically check prerequisites. Poll preparation.taskId; after continuation consume result.originalResult instead of repeating the original call.',confirmation:'Exact task, revision, environment and current user reply; configuration never authorizes business writes.',modules:Object.fromEntries(Object.entries(taskModules).map(([name,base64])=>[name,{sha256:crypto.createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}]))};
-for(const name of ['media-runtime.mjs','media-worker.py']){
+for(const name of ['media-runtime.mjs','media-worker.py','cache-cleanup.mjs']){
  const target=path.join(root,name),text=fs.readFileSync(target,'utf8').replaceAll('\r\n','\n');
  fs.writeFileSync(target,text);
  files[name]={sha256:crypto.createHash('sha256').update(text).digest('hex'),bytes:Buffer.byteLength(text)};

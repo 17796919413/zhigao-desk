@@ -4,14 +4,18 @@ import functools
 import http.server
 import json
 import os
+import re
 import sys
 import threading
 from playwright.sync_api import sync_playwright
 
 sys.stdout.reconfigure(encoding='utf-8')
 ROOT = Path(__file__).resolve().parents[1]
-OUT = Path(os.environ.get('ZHIGAO_UPDATE_VERIFY_OUT',str(ROOT.parent / '_verify' / 'connector-updates-20261110')))
+OUT = Path(os.environ.get('ZHIGAO_VERIFY_OUT') or os.environ.get('ZHIGAO_UPDATE_VERIFY_OUT',str(ROOT.parent / '_verify' / 'connector-updates-20261110')))
 OUT.mkdir(parents=True, exist_ok=True)
+web_version = re.search(r"WEB_VERSION='(\d+\.\d+\.\d+)'", (ROOT / 'connector-updates.js').read_text(encoding='utf-8')).group(1)
+major, minor, patch = map(int, web_version.split('.'))
+future_web_version = f'{major}.{minor}.{patch + 1}'
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -116,7 +120,7 @@ try:
         ok('网络失败不会误报版本最新')
 
         fixture['remote_failure'] = False
-        fixture['remote'] = '1.9.1'
+        fixture['remote'] = future_web_version
         check.click()
         page.locator('[data-action=connect-update-refresh]').wait_for()
         assert page.locator('[data-action=connect-update-apply]').is_visible()

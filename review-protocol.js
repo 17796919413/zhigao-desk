@@ -5,9 +5,14 @@ export function parseReview(data,task,snapshot){
  const fail=(code,message,details)=>{throw reviewError(code,message,details);};
  if(!data||data.snapshot!==snapshot)fail('SNAPSHOT_CHANGED','这份结果对应旧稿件，或缺少 snapshot。请重新获取审稿指令。');
  const cells=new Map(task.cells.map(c=>[c.id,c])),changes=new Map();
+ const optionalSuggestions=data.optionalSuggestions??[],mediaOpinions=data.mediaOpinions??[];
+ if(!Array.isArray(optionalSuggestions)||!Array.isArray(mediaOpinions))fail('INVALID_RESULT','optionalSuggestions 和 mediaOpinions 须为数组。');
+ for(const x of optionalSuggestions)if(!cells.has(x?.id)||typeof x.suggestion!=='string'||!x.suggestion.trim()||typeof x.reason!=='string')fail('INVALID_RESULT','可选优化须有有效位置、建议和理由。');
+ for(const x of mediaOpinions)if(typeof x?.assetId!=='string'||typeof x.problem!=='string'||!x.problem.trim())fail('INVALID_RESULT','媒体意见须绑定已读取的素材并说明具体问题。');
  const cell=id=>{const c=cells.get(id);if(!c)fail('UNKNOWN_BLOCK',`找不到修改位置 ${id}。`,{cellId:id});return c;};
  if(!Array.isArray(data.changes??[])||!Array.isArray(data.patches??[]))fail('INVALID_RESULT','changes 和 patches 必须为数组。');
  for(const x of data.changes||[]){
+  if(x.optional||x.required===false||x.priority==='optional')fail('OPTIONAL_EDIT','可选表达优化请放入 optionalSuggestions，不直接改稿。');
   const c=cell(x.id);if(changes.has(x.id))fail('DUPLICATE_BLOCK',`重复修改 ${x.id}。`,{cellId:x.id});
   if(x.original!==c.current){let index=0;const actual=String(x.original??'');while(index<c.current.length&&index<actual.length&&c.current[index]===actual[index])index++;
    fail('ORIGINAL_MISMATCH',`${x.id} 原文第 ${index+1} 个字符不一致。`,{cellId:x.id,index,expected:JSON.stringify(c.current.slice(Math.max(0,index-16),index+24)),actual:JSON.stringify(actual.slice(Math.max(0,index-16),index+24))});}
@@ -17,6 +22,7 @@ export function parseReview(data,task,snapshot){
  for(const p of data.patches||[]){const id=p.cellId||p.id;cell(id);if(changes.has(id))fail('MIXED_BLOCK_EDITS',`${id} 不能同时使用整段修改和局部替换。`,{cellId:id});if(!groups.has(id))groups.set(id,[]);groups.get(id).push(p);}
  for(const [id,patches] of groups){const c=cell(id),edits=[];
   for(const p of patches){
+   if(p.optional||p.required===false||p.priority==='optional')fail('OPTIONAL_EDIT','可选表达优化请放入 optionalSuggestions，不直接改稿。');
    if(typeof p.find!=='string'||!p.find.length||typeof p.replace!=='string'||p.find.length>30000||p.replace.length>30000)fail('INVALID_PATCH',`${id} 的 find 须为非空文字，单次 find/replace 不得超过 30000 字。`,{cellId:id});
    const positions=[];for(let at=0;(at=c.current.indexOf(p.find,at))!==-1;at++)positions.push(at);
    if(!positions.length)fail('PATCH_NOT_FOUND',`${id} 未找到指定原句。`,{cellId:id,find:p.find});
@@ -39,5 +45,5 @@ export function parseReview(data,task,snapshot){
  for(const w of data.warnings||[]){if(w&&typeof w==='object'){const text=String(w.text||w.message||'');if(!text)fail('INVALID_WARNINGS','提醒缺少正文。');warnings.push(text);if(w.blocking||w.severity==='blocking')blockingWarnings.push(text);}else warnings.push(String(w));}
  for(const w of data.blockingWarnings||[]){if(typeof w!=='string'||!w.trim())fail('INVALID_WARNINGS','blockingWarnings 须为非空文字数组。');blockingWarnings.push(w);if(!warnings.includes(w))warnings.push(w);}
  const changed=[...changes.values()].filter(x=>x.original!==x.revised).map(x=>({id:x.id,original:x.original,revised:x.revised,reason:String(x.reason||'AI 建议'),status:'pending'}));
- return {changes:changed,warnings,blockingWarnings:[...new Set(blockingWarnings)],coverage:{reported,total:blocks.length,reviewed:reviewedIds.length,reviewedIds,unreviewedIds,changed:changed.length,complete:reported&&!unreviewedIds.length&&!blockingWarnings.length},needsSupplement:!reported||!!unreviewedIds.length||!!blockingWarnings.length};
+ return {changes:changed,optionalSuggestions:optionalSuggestions.map(x=>({id:x.id,suggestion:x.suggestion,reason:x.reason})),mediaOpinions:mediaOpinions.map(x=>({assetId:x.assetId,problem:x.problem.trim()})),warnings,blockingWarnings:[...new Set(blockingWarnings)],coverage:{reported,total:blocks.length,reviewed:reviewedIds.length,reviewedIds,unreviewedIds,changed:changed.length,complete:reported&&!unreviewedIds.length&&!blockingWarnings.length},needsSupplement:!reported||!!unreviewedIds.length||!!blockingWarnings.length};
 }

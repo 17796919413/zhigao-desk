@@ -33,6 +33,16 @@ check('R12-date-boundaries',()=>{assert.equal(dateISO('2026-13-01'),'');assert.e
 check('R13-unicode-reserved',()=>{for(const ext of ['.docx','.xlsx','.mp4']){const s=safeName('😀'.repeat(100)+ext,120);assert.ok(s.endsWith(ext));assert.ok(s.length<=120);assert.ok(!/[\uD800-\uDBFF]$/.test(s.slice(0,-ext.length)));}assert.equal(safeName('CON.docx',120),'_CON.docx');});
 check('R14-patch-limits',()=>{const current='甲'.repeat(40000),task={cells:[{id:'p',current}]};assert.throws(()=>parseReview({snapshot:'s',changes:[{id:'p',original:current,revised:current+'乙'}]},task,'s'),e=>e.code==='INVALID_REVISED');assert.throws(()=>parseReview({snapshot:'s',patches:[{cellId:'p',find:'甲',replace:'乙乙',occurrence:'all'}]},task,'s'),e=>e.code==='INVALID_PATCH');assert.throws(()=>parseReview({snapshot:'s',patches:[{cellId:'p',find:'甲',replace:'乙',occurrence:1}]},{cells:[{id:'p',current,note:'只读'}]},'s'),e=>e.code==='BLOCK_READ_ONLY');});
 check('R04-formatted-values',()=>{assert.equal(numericDisplay('0.25',10).text,'25.00%');assert.equal(numericDisplay('1',14).text,'01-01-00');assert.equal(numericDisplay('0',14,undefined,true).text,'01-01-04');assert.ok(numericDisplay('60',14).blocker);assert.ok(numericDisplay('123',164,'[Red][>10]0.0').blocker);assert.equal(numericDisplay('123',11).text,'1.23E+02');});
+check('R04-native-excel-date-separators',()=>{
+ assert.equal(numericDisplay('46342',164,String.raw`yyyy\-mm\-dd`).text,'2026-11-16');
+ assert.equal(numericDisplay('46342.5',164,String.raw`yyyy\-mm\-dd hh\:mm`).text,'2026-11-16 12:00');
+ assert.equal(numericDisplay('46342',164,'yyyy"-"mm"-"dd').text,'2026-11-16');
+ assert.ok(numericDisplay('46342',164,String.raw`yyyy\mdd`).blocker);
+ assert.ok(numericDisplay('60',164,String.raw`yyyy\-mm\-dd`).blocker);
+ assert.ok(numericDisplay('46342',164,'[Red]yyyy-mm-dd').blocker);
+ assert.ok(numericDisplay('12.5',164,String.raw`0\.00`).blocker);
+ assert.ok(numericDisplay('12.5',164,'0"."00').blocker);
+});
 for(const r of results)console.log((r.passed?'PASS ':'FAIL ')+r.id+(r.error?' '+r.error:''));
 if(process.env.ZHIGAO_VERIFY_OUT){fs.mkdirSync(process.env.ZHIGAO_VERIFY_OUT,{recursive:true});fs.writeFileSync(process.env.ZHIGAO_VERIFY_OUT+'/logic-results.json',JSON.stringify(results,null,2));}
 if(results.some(r=>!r.passed))process.exitCode=1;

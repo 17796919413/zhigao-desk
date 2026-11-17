@@ -12,7 +12,7 @@ function fixture(){
  const state={auth:'auth',identity:'A',access:null,resumes:0,logins:0,model:'large-v3-turbo',mediaReady:false,pending:false,originalCalls:0,source:'same-source'};
  const host={home,version:'1.14.0',site:'https://example.invalid/',
   pageCall:async(name,args)=>{
-   if(name==='zhigao_task_context')return {binding:{projectId:'A',fingerprint:state.source},requirements:[{id:['review','office'].includes(args.operation)?'media':'feishu',state:'check_runtime'}],tableUrl:'https://example.feishu.cn/sheets/Synthetic',mediaIds:[],needsPreparation:state.pending};
+   if(name==='zhigao_task_context')return {binding:{projectId:'A',fingerprint:state.source},requirements:[{id:['review','office'].includes(args.operation)?'media':'feishu',state:'check_runtime'}],tableUrl:'https://example.feishu.cn/sheets/Synthetic',mediaIds:[],needsPreparation:state.pending,...(state.scopeRequest?{scopeRequest:state.scopeRequest,continuationAction:'gridWrite'}:{})};
    if(name==='zhigao_resume_prepared_task'){state.resumes++;if(state.resumeError&&(state.alwaysFail||state.resumes===1))throw Object.assign(Error('synthetic transport failure'),{code:state.resumeError});if(state.changeSource)state.source='changed-source';state.pending=false;return {result:{continued:true},next:{tool:'original'}};}
    state.originalCalls++;state.lastOriginal={name,args};if(state.originalError)throw Object.assign(Error('original response lost'),{code:state.originalError});return {reviewToken:'synthetic-review-token'};
   },
@@ -21,7 +21,7 @@ function fixture(){
   feishuStatus:async()=>({state:state.auth,accountFingerprint:state.identity}),
   inspectTable:async()=>{if(state.access)throw Object.assign(Error('private process secret'),state.access);},
   larkCommand:()=>({file:'synthetic-lark',prefix:[]}),
-  larkJson:async(args)=>{if(args.includes('--device-code')){state.auth='ready';state.access=null;return {};}state.logins++;return {device_code:'PRIVATE_DEVICE',verification_url:'https://accounts.feishu.cn/synthetic',expires_in:600};}};
+  larkJson:async(args)=>{if(args.includes('--device-code')){state.auth='ready';state.access=null;return {};}state.logins++;state.lastLogin=args;return {device_code:'PRIVATE_DEVICE',verification_url:'https://accounts.feishu.cn/synthetic',expires_in:600};}};
  const {tasks,automatic}=createTaskChannels(host,{createTaskRuntime,createChannelRuntime:()=>({busy:()=>false}),LARK_HASHES:{[process.platform+'-'+process.arch]:'test'},LARK_VERSION:'synthetic',OFFICE_PACKAGE:{},runPrivate:async()=>{throw Error('QR unavailable');}});
  return {tasks,automatic,state,home};
 }
@@ -140,6 +140,13 @@ await check('a genuinely changed source does not inherit an older uncertain prep
  Object.assign(f.state,{source:'new-round-source',resumeError:null});
  const second=await f.automatic('zhigao_get_review_brief',args);assert.notEqual(second.preparation.taskId,first.preparation.taskId);
  await f.tasks.wait(second.preparation.taskId);assert.equal(f.tasks.status(second.preparation).state,'continued');
+});
+await check('write-only scope uses exact grant and the original operation still proves the write',async()=>{
+ const f=fixture();f.state.auth='ready';f.state.scopeRequest={id:'write-demand',scopes:['sheets:spreadsheet']};
+ const p=await f.tasks.plan(request);assert.equal(p.state,'awaiting_confirmation');assert.deepEqual(p.requirements[0].scopes,['sheets:spreadsheet']);
+ await f.tasks.confirm({...p,decision:'approve'});await f.tasks.wait(p.taskId);assert.deepEqual(f.state.lastLogin.slice(2,4),['--scope','sheets:spreadsheet']);
+ await f.tasks.resume(p);await f.tasks.wait(p.taskId);assert.equal(f.tasks.status(p).state,'continued');assert.equal(f.state.resumes,1);
+ f.state.scopeRequest={id:'another-demand',scopes:['sheets:spreadsheet']};const next=await f.tasks.plan(request);assert.equal(next.state,'awaiting_confirmation');
 });
 console.log(JSON.stringify({passed:true,checks}));
 }finally{for(const root of roots)fs.rmSync(root,{recursive:true,force:true});}
