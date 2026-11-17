@@ -329,6 +329,8 @@ def verification_network_recovery(page):
 def verification_client_replacement(page):
     global client
     assert not client.call('zhigao_status').get('isError')
+    page.wait_for_function('a.agent.verification?.at')
+    previous_at=page.evaluate('a.agent.verification.at')
     client.close();client=None
     page.wait_for_function("a.agent.state==='waiting'", timeout=8000)
     client=MCP(script,env,log,page)
@@ -339,12 +341,16 @@ def verification_client_replacement(page):
     # A new process must perform a fresh status round trip automatically; an old
     # proof alone must never be treated as verification of the new connection.
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=8000)
-    assert any(row['label'] == '查看状态' and row['ok'] for row in page.evaluate('a.agent.log'))
+    # The fresh check may finish before reload. Its server timestamp survives
+    # navigation; the page-local log intentionally does not.
+    page.wait_for_function('(previous)=>a.agent.verification?.at>previous',arg=previous_at,timeout=8000)
 
 
 def verification_hub_replacement(page):
     global client, hub
     assert not client.call('zhigao_status').get('isError')
+    page.wait_for_function('a.agent.verification?.at')
+    previous_at=page.evaluate('a.agent.verification.at')
     client.close(); client = None
     hub.terminate(); hub.wait(timeout=10)
     page.wait_for_function("a.agent.state!=='online'", timeout=8000)
@@ -354,7 +360,7 @@ def verification_hub_replacement(page):
     page.reload(); page.wait_for_selector('#agent-chip')
     page.evaluate("async()=>window.a=await import('/agent.js')")
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=12000)
-    assert any(row['label'] == '查看状态' and row['ok'] for row in page.evaluate('a.agent.log'))
+    page.wait_for_function('(previous)=>a.agent.verification?.at>previous',arg=previous_at,timeout=8000)
 
 
 def verification_idle_refresh(page):
