@@ -12,6 +12,7 @@ import {reviewStagesFor,reviewStatus,pendingCount,flowOf,FLOW_STATES,itemProgres
 export const AGENT_PORT=47821;
 const HUB=`http://127.0.0.1:${AGENT_PORT}`;
 const KEY='zhigao-agent-v1';
+const VERIFIED_KEY=KEY+'-verified-projects';
 export const TOOL_LABELS={zhigao_reopen_review:'继续审核',zhigao_renew_review:'延长审稿时间',zhigao_release_review:'释放审稿',zhigao_update_project:'更新品牌资料与口径',zhigao_publish_feishu_extraction:'生成飞书精炼表',zhigao_extract_feishu:'提炼执行表',zhigao_prepare_feishu_sync:'准备同步核对',zhigao_create_review_batch:'建立审稿批次',zhigao_get_review_batch:'查询审稿批次',zhigao_fail_review:'记录审稿失败',zhigao_status:'查看状态',zhigao_list_tasks:'列出任务',zhigao_get_project:'读取项目规则',zhigao_open_task:'打开稿件',zhigao_get_review_brief:'读取审稿指令',zhigao_read_review_context:'分页读取审稿依据',zhigao_record_review_checks:'保存分批核对',zhigao_submit_review:'提交审稿建议',zhigao_get_feedback_brief:'读取品牌反馈',zhigao_submit_feedback_items:'提交反馈条目'};
 const WRITES=new Set(['zhigao_update_project','zhigao_submit_review','zhigao_submit_feedback_items']);
 
@@ -22,6 +23,11 @@ let pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
 const preference=()=>{try{return localStorage.getItem(KEY);}catch{return null;}};
 export const agentWanted=()=>preference()==='on';
 const remember=on=>{try{localStorage.setItem(KEY,on?'on':'off');}catch{}};
+const previousVerification=projectId=>{try{return JSON.parse(localStorage.getItem(VERIFIED_KEY)||'{}')[projectId];}catch{return null;}};
+function rememberVerification(v){
+ if(!agentWanted()||!v?.projectId||!v.client)return;
+ try{const saved=JSON.parse(localStorage.getItem(VERIFIED_KEY)||'{}');delete saved[v.projectId];saved[v.projectId]={client:v.client,at:v.at};localStorage.setItem(VERIFIED_KEY,JSON.stringify(Object.fromEntries(Object.entries(saved).slice(-128))));}catch{}
+}
 const set=(state,extra={})=>{Object.assign(agent,{state},extra);if(state!=='online'||!agent.clients.includes(agent.verification?.client))agent.verification=null;ctx?.changed();};
 const sleep=(ms,signal)=>new Promise(r=>{const done=()=>{clearTimeout(t);signal?.removeEventListener('abort',done);r();},t=setTimeout(done,ms);if(signal?.aborted)done();else signal?.addEventListener('abort',done,{once:true});});
 async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data),signal:signal||AbortSignal.timeout(30000),cache:'no-store'});if(!r.ok){const body=await r.json().catch(()=>({}));throw Object.assign(Error(body.error||`连接器返回 ${r.status}`),{code:body.code,status:r.status});}return r.json();}
@@ -61,7 +67,7 @@ const tools={
  zhigao_prepare_feishu_sync:(args={})=>ctx.prepareFeishuSync(args),
  zhigao_read_feishu_table:args=>ctx.readFeishuTable(args),
  zhigao_status({project}={}){const {settings,tasks,items}=S(),p=findProject(project),ownItems=items.filter(it=>it.projectId===p.id&&activityOf(it)===selectedActivity(p)),ownTasks=tasks.filter(t=>t.projectId===p.id&&activityOf(t)===selectedActivity(p));const by={};for(const it of ownItems){const pr=itemProgress(it,ownTasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
-  return{connected:true,protocolVersion:'1.15.1',currentProject:p?.name||'',currentProjectId:p.id,currentActivityId:selectedActivity(p),currentActivity:activityName(p),projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:ownItems.length,documents:ownTasks.length,waiting:by,
+  return{connected:true,protocolVersion:WEB_VERSION,currentProject:p?.name||'',currentProjectId:p.id,currentActivityId:selectedActivity(p),currentActivity:activityName(p),projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:ownItems.length,documents:ownTasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id&&activityOf(b)===selectedActivity(p)).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
   const q=String(search||'').trim().toLowerCase(),pn=id=>settings.projects.find(x=>x.id===id)?.name||'';
@@ -107,7 +113,7 @@ async function handle(call){
  ctx.changed();
   // Retry delivery of the same result, never re-execute the underlying tool.
   let delivered=false,expired=false;
-  for(let attempt=0;attempt<3&&!delivered;attempt++)try{const ack=await post('/page/result',{...res,pageId});if(ack.accepted===false){expired=true;break;}delivered=true;}catch(error){if(error.code==='PAGE_SESSION_CHANGED')break;await sleep(500*(attempt+1));}
+  for(let attempt=0;attempt<3&&!delivered;attempt++)try{const ack=await post('/page/result',{...res,pageId});if(ack.accepted===false){expired=true;break;}delivered=true;rememberVerification(ack.verification);}catch(error){if(error.code==='PAGE_SESSION_CHANGED')break;await sleep(500*(attempt+1));}
   if(!delivered){agent.log.unshift({at:new Date().toISOString(),label:'结果回传失败',ok:false,error:expired?'请求已停止等待，操作结果未交给 AI；请检查已保存进度后续审，勿重复提交。':'操作已执行，但连接器未确认接收；请检查连接与稿件状态，勿重复提交。'});ctx.changed();}
   activeCall=null;
 }
@@ -148,13 +154,28 @@ async function loop(signal,connection){
  }
 }
 async function run(){
- abort=new AbortController();const signal=abort.signal;let beating=false;
+ abort=new AbortController();const signal=abort.signal;let beating=false,restoring=false,nextRestore=0;
+ const restore=async()=>{
+  if(restoring||signal.aborted||activeCall||agent.verification||Date.now()<nextRestore)return;
+  const id=pageId,projectId=S().settings.selected,previous=previousVerification(projectId);
+  if(!previous?.client||!agent.clients.includes(previous.client))return;
+  restoring=true;
+  try{
+   // This saved marker requests a new read-only round trip. It never makes an
+   // expired session verified just because a client has the same display name.
+   const request=new AbortController(),cancel=()=>request.abort(),deadline=setTimeout(cancel,30000);
+   signal.addEventListener('abort',cancel,{once:true});
+   try{await post('/page/revalidate',{pageId:id,projectId,client:previous.client},request.signal);}finally{clearTimeout(deadline);signal.removeEventListener('abort',cancel);}
+  }catch{}finally{restoring=false;nextRestore=Date.now()+10000;}
+ };
  set('connecting');
  const connection={sequence:0,settled:0,failedAt:null,
   success(r,id,request){
    if(signal.aborted||id!==pageId||request<this.settled)return;
    this.settled=request;this.failedAt=null;
     set(r.clients?.length?'online':'waiting',{clients:r.clients||[],version:r.version||agent.version,error:null,...(Object.hasOwn(r,'verification')?{verification:r.verification}:{})});
+    rememberVerification(agent.verification);
+    if(agent.state==='online'&&!agent.verification)void restore();
   },
   failure(error,request,id){
    // Neither late failures nor late successes may overwrite a newer response.
@@ -197,7 +218,7 @@ export async function startAgent(){
 const disconnectPage=(permanent=false)=>{try{navigator.sendBeacon(HUB+'/page/disconnect',JSON.stringify({pageId,permanent}));}catch{}};
 window.addEventListener('pagehide',()=>{pageHidden=true;lockAbort?.abort();abort?.abort();set('off');disconnectPage();});
 window.addEventListener('pageshow',()=>{if(pageHidden){pageHidden=false;discoverAgent();}});
-export function stopAgent(){remember(false);lockAbort?.abort();abort?.abort();if(!activeCall)disconnectPage(true);set('off',{clients:[]});}
+export function stopAgent(){remember(false);try{localStorage.removeItem(VERIFIED_KEY);}catch{}lockAbort?.abort();abort?.abort();if(!activeCall)disconnectPage(true);set('off',{clients:[]});}
 
 export const withReviewLock=fn=>reviewService?reviewService.exclusive(fn):fn();
 export const forgetReviews=(ids,projectIds)=>reviewService?.forget(ids,projectIds);

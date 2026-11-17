@@ -1,3 +1,4 @@
+import {WEB_VERSION} from './connector-updates.js';
 import {purgeLibraryReferences,acknowledgeLibraryCleanup,captureConnectorSources,connectorCleanupManifest} from './library-cleanup.js';
 import {activityOf,selectedActivity,projectForActivity,activitiesOf,activityName,assertActivitySelection,activityRevision} from './activities.js';
 import {writeRecords,readRecords,recordKey,tombstoneKey,commitBundleImport,recoverBundleImports} from './record-storage.js';
@@ -852,7 +853,7 @@ async function loadReviewProgress(docId){return db?dbOp('get','review-checkpoint
 async function saveReviewProgress(checkpoint){if(!db)throw Error('浏览器数据库不可用。');await persistAI([['integrations',{...checkpoint,kind:'review-checkpoint'}]],{required:[['tasks',checkpoint.docId]]});}
 async function clearReviewProgress(docId){if(db)await dbOp('delete','review-checkpoint:'+docId,'integrations');}
 initAgent({state:()=>({settings,tasks,items,batches}),
- setupStatus:async({feishuStatus}={})=>{if(feishuStatus)connections.updateFeishu(feishuStatus);const p=project(),h=folders.get(p.id),state=h?await folderState(h):'none';folderStates.set(p.id,state);connections.refresh();return {state:'connected',version:'1.15.1',project:{id:p.id,name:p.name},archive:{state:folderSupported()?state:'unsupported',selected:!!h},feishuTable:{sourceLinked:!!p.feishu?.source?.url,refinedLinked:!!p.feishu?.refined?.url,access:'not_checked'},features:{localEditing:'available',aiReview:verifiedConnection(agent,p.id)?'verified':agent.state==='online'?'client_online_unverified':'waiting',archive:state==='granted'?'authorized':'not_ready'}};},
+ setupStatus:async({feishuStatus}={})=>{if(feishuStatus)connections.updateFeishu(feishuStatus);const p=project(),h=folders.get(p.id),state=h?await folderState(h):'none';folderStates.set(p.id,state);connections.refresh();return {state:'connected',version:WEB_VERSION,project:{id:p.id,name:p.name},archive:{state:folderSupported()?state:'unsupported',selected:!!h},feishuTable:{sourceLinked:!!p.feishu?.source?.url,refinedLinked:!!p.feishu?.refined?.url,access:'not_checked'},features:{localEditing:'available',aiReview:verifiedConnection(agent,p.id)?'verified':agent.state==='online'?'client_online_unverified':'waiting',archive:state==='granted'?'authorized':'not_ready'}};},
  openSetup:({section}={})=>{if(!['ai','feishu','folder'].includes(section))throw Error('请选择 ai、feishu 或 folder。');if($('#modal-root .modal')&&!$('#connections-body'))return {opened:false,state:'waiting_for_user',message:'请先完成或关闭当前弹窗。'};connections.open(section);return {opened:true,section,projectId:project().id,message:section==='folder'?'请在网页选择或授权本地文件夹；完成后重新查询接入状态。':'已展开现有连接设置。'};},
  updateProject:commitAgentProject,
  getMediaFile:async id=>(await dbOp('get',id,'media'))?.blob,

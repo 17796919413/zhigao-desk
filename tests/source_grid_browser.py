@@ -79,9 +79,33 @@ try:
    assert control()['writes']==before+1
    page.reload();page.wait_for_function('!!window.probe && !!probe.db()');page.locator('[data-page=feishu]').first.click();saved();assert control()['writes']==before+1
    passed('写入已提交但响应丢失，刷新后恢复同操作结果，不重写')
-   control(bump=True);before=control()['writes'];edit('A5','外部修改后待确认');page.wait_for_selector('[data-grid-retry]');assert control()['writes']==before
-   page.on('dialog',lambda d:d.accept());page.locator('[data-grid-retry]').click();saved();assert control()['writes']==before+1
-   passed('外部版本变化保留输入，明确核对目标格后才重试')
+   dialogs=[]
+   page.on('dialog',lambda d:(dialogs.append(d.message),d.dismiss()))
+   control(bump=True);before=control()['writes'];edit('A5','版本变化后直接保存');saved();assert control()['writes']==before+1
+   assert not dialogs,dialogs
+   assert page.locator('[data-grid-retry]').count()==0
+   assert '有内容待保存' not in page.locator('#source-grid-panel').inner_text()
+   passed('无关版本变化自动重读并保存，不弹确认或显示手动重试入口')
+   before=control(edit={'address':'A6','text':'其他行的云端修改'})['writes']
+   edit('A5','无关单元格变化后自动保存');saved();assert control()['writes']==before+1
+   assert control()['store']['s']['A6']['rawValue']=='其他行的云端修改'
+   passed('其他行真实变化不阻断当前格保存，不覆盖其他单元格')
+   before=control(lost=True)['writes'];edit('A5','响应丢失后后台恢复')
+   page.wait_for_function("document.querySelector('[data-grid-status]').textContent.includes('保存未完成')")
+   page.wait_for_function("document.querySelector('[data-grid-status]').textContent==='已保存'",timeout=15000)
+   assert control()['writes']==before+1
+   passed('写入响应丢失后自动核对并恢复，无需按钮且不重复写入')
+   before=control(edit={'address':'A5','text':'飞书上更新的内容'})['writes']
+   edit('A5','旧页面的输入');page.wait_for_function("document.querySelector('[data-grid-status]').textContent.includes('此行已在飞书修改')")
+   assert control()['writes']==before and control()['store']['s']['A5']['rawValue']=='飞书上更新的内容'
+   assert not dialogs and page.locator('[data-grid-retry]').count()==0
+   edit('A5','核对最新内容后的输入');saved()
+   passed('真正同格冲突保留云端和本地输入；重新编辑后直接保存，无确认弹窗')
+   before=control(swapRows=[5,6])['writes'];edit('B5','不能写给换行后的达人')
+   page.wait_for_function("document.querySelector('[data-grid-status]').textContent.includes('此行已在飞书修改')")
+   assert control()['writes']==before and not control()['store']['s'].get('B5')
+   edit('B5','核对新行后的内容');saved()
+   passed('同样行列数的行交换仍拦截旧地址写入，防止写给另一位达人')
    page.locator('[data-grid-cell=A5]').dblclick();page.locator('[data-grid-input]').fill('刷新时未离开编辑格');page.reload();page.wait_for_function('!!window.probe && !!probe.db()');page.locator('[data-page=feishu]').first.click();saved();assert page.locator('[data-grid-cell=A5]').inner_text()=='刷新时未离开编辑格'
    passed('编辑中刷新仍能恢复草稿并保存')
    page.locator('[data-grid-next]').click();page.wait_for_selector('[data-grid-cell=A41]');page.locator('[data-grid-next]').click();page.wait_for_selector('[data-grid-cell=A81]');assert page.locator('.source-grid tbody tr').count()==5

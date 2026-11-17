@@ -34,7 +34,7 @@ export function createConnections(ctx) {
     reconnecting: ['正在恢复连接', '连接暂时中断，正在自动重试。'],
     offline: ['暂时无法连接', '正在自动重试。请确认 AI 客户端已接通知稿、浏览器允许本地网络访问；也可点击“重新连接”。'],
     waiting: ['网页已连接 · 等待 AI', '网页已接通本机连接器。请在 AI 客户端调用一次知稿状态工具；有些客户端会在空闲时断开。'],
-    online: verifiedConnection(ctx.agent,ctx.project().id) ? ['AI 可用', `${ctx.agent.verification.client} 已成功读取当前品牌状态。`] : ['客户端在线 · 待验证', '客户端已接通连接器，尚未验证当前品牌。把接入指令发给 AI 完成检查。'],
+    online: verifiedConnection(ctx.agent,ctx.project().id) ? ['AI 可用', `${ctx.agent.verification.client} 的当前品牌连接已验证。`] : ['客户端在线 · 待验证', '客户端已接通连接器，尚未验证当前品牌。把接入指令发给 AI 完成检查。'],
     'other-tab': ['其他页面已连接', '另一个知稿标签页或浏览器正在连接。关闭旧页面后，这里会自动接入。'],
   })[ctx.agent.state] || ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'];
 

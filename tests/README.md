@@ -1,6 +1,8 @@
 # 本地开发回归
 
-刷新连接回归：`python -X utf8 tests/agent_connection_browser.py` 使用新的 `ZHIGAO_VERIFY_OUT`，覆盖真实 MCP 调用后的刷新恢复、品牌隔离、主动断开、网络恢复、同名客户端会话更换以及四个主页面移除活动栏。测试使用隔离 Edge、随机端口与合成品牌，将心跳和会话过期时间缩短；不代表实际系统休眠或 Mac 客户端验收。刷新可以恢复仍在线客户端的既有验证，首次接入和新客户端会话仍需一次真实状态调用。
+刷新连接回归：`python -X utf8 tests/agent_connection_browser.py` 使用新的 `ZHIGAO_VERIFY_OUT`，覆盖真实 MCP 调用后的刷新恢复、品牌隔离、主动断开、网络恢复、同名客户端会话更换、连接器重启以及四个主页面移除活动栏。已接通过的品牌在会话变化后必须自动完成新的只读状态调用，不能只沿用缓存。默认缩短测试心跳和过期时间；`ZHIGAO_CONNECTION_REAL_IDLE=1` 与 `ZHIGAO_CONNECTION_CASE=verification_idle_refresh` 使用正式间隔，空闲95秒后刷新。不代表实际系统休眠或 Mac 客户端验收。
+
+表格自动保存回归：`python -X utf8 tests/source_grid_browser.py` 默认使用实际grid运行时及合成飞书接口，验证无关版本变化后自动保存、响应丢失后自动恢复、同格冲突与等尺寸换行保护、持续输入和刷新恢复。逐格确认、“有内容待保存”和“核对后重试”入口已移除；授权缺失交回现有准备流程，不参与后台重试。只有写后回读一致才显示已保存。
 
 同步后返回原表：`python -X utf8 tests/source_grid_browser.py`新增核对已知云表版本变化后的重返与编辑。只有同一表的已知版本高于当前缓存时才刷新，复用既有表格和状态，不新增操作；原有草稿、断网恢复及迟到响应场景继续覆盖。
 

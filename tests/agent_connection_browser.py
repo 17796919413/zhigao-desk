@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(os.environ['ZHIGAO_VERIFY_OUT']) / 'agent-connection'
 OUT.mkdir(parents=True, exist_ok=True)
 BASELINE = os.environ.get('ZHIGAO_CONNECTION_BASELINE') == '1'
+REAL_IDLE = os.environ.get('ZHIGAO_CONNECTION_REAL_IDLE') == '1'
 BASELINE_COMMIT = '0dc2713ecf8b3cd863b197c0700fd0698373dfbc'  # Published 1.12.1; HEAD changes after a release.
 http.server.ThreadingHTTPServer.request_queue_size = 128
 http.server.ThreadingHTTPServer.daemon_threads = True
@@ -33,7 +34,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.split('?', 1)[0] == '/agent.js':
             source = subprocess.check_output(['git', 'show', BASELINE_COMMIT + ':agent.js'], cwd=ROOT).decode() if BASELINE else (ROOT / 'agent.js').read_text(encoding='utf-8')
-            data = source.replace('setInterval(beat,10000)', 'setInterval(beat,150)').encode()
+            data = (source if REAL_IDLE else source.replace('setInterval(beat,10000)', 'setInterval(beat,150)')).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/javascript')
             self.send_header('Content-Length', str(len(data)))
@@ -54,7 +55,7 @@ home = OUT / 'isolated-home'
 home.mkdir(exist_ok=True)
 script = OUT / 'connector.mjs'
 source = (ROOT / 'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()', json.dumps(str(home)))
-script.write_text(source.replace('}, 25000)', '}, 600)').replace('pageStale:120000', 'pageStale:2500')
+script.write_text(source if REAL_IDLE else source.replace('}, 25000)', '}, 600)').replace('pageStale:120000', 'pageStale:2500')
                   .replace('now - c.seen > 90000', 'now - c.seen > 2000')
                   .replace('}, 5000).unref();', '}, 200).unref();'), encoding='utf-8')
 env = {**os.environ, 'ZHIGAO_PORT': str(port), 'ZHIGAO_AUTO_UPDATE': '0', 'ZHIGAO_REGISTER_URI': '0', 'ZHIGAO_ORIGINS': origin}
@@ -335,16 +336,41 @@ def verification_client_replacement(page):
     page.reload();page.wait_for_selector('#agent-chip')
     page.evaluate("async()=>window.a=await import('/agent.js')")
     online(page)
-    # Same display name, different client process: the old proof must not transfer.
-    assert '待验证' in page.locator('#agent-chip').inner_text()
+    # A new process must perform a fresh status round trip automatically; an old
+    # proof alone must never be treated as verification of the new connection.
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=8000)
+    assert any(row['label'] == '查看状态' and row['ok'] for row in page.evaluate('a.agent.log'))
+
+
+def verification_hub_replacement(page):
+    global client, hub
     assert not client.call('zhigao_status').get('isError')
-    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+    client.close(); client = None
+    hub.terminate(); hub.wait(timeout=10)
+    page.wait_for_function("a.agent.state!=='online'", timeout=8000)
+    hub = subprocess.Popen(['node', str(script), 'hub'], env=env, stdout=log, stderr=log,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    client = MCP(script, env, log, page)
+    page.reload(); page.wait_for_selector('#agent-chip')
+    page.evaluate("async()=>window.a=await import('/agent.js')")
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=12000)
+    assert any(row['label'] == '查看状态' and row['ok'] for row in page.evaluate('a.agent.log'))
+
+
+def verification_idle_refresh(page):
+    assert not client.call('zhigao_status').get('isError')
+    page.wait_for_timeout(95000 if REAL_IDLE else 2800)
+    page.reload(); page.wait_for_selector('#agent-chip')
+    page.evaluate("async()=>window.a=await import('/agent.js')")
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=15000)
+    page.get_by_role('button', name='连接与授权', exact=True).click()
+    page.screenshot(path=str(OUT/'idle-refresh-verified.png'),full_page=True)
 
 
 CASES = [invitation_and_verified_project, activity_toolbar_removed, verification_project_scope, verification_explicit_disconnect, verification_network_recovery,
          wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
          stopped_poll_cannot_reconnect, restored_page_session, multiple_tabs,
-         outage_and_recovery, suspended_transport_and_resume, verification_client_replacement, hub_exit_and_client_takeover]
+         outage_and_recovery, suspended_transport_and_resume, verification_client_replacement, verification_hub_replacement, verification_idle_refresh, hub_exit_and_client_takeover]
 try:
     for _ in range(80):
         try:
