@@ -81,7 +81,7 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(list(self.script.parent.glob('*.bak-zhigao-*')))
 
     def test_existing_mcp_session_uses_new_runtime_without_restart(self):
-        self.publisher()
+        self.publisher(auto=True)  # Runtime adoption requires its update timer.
         p = self.start(name='existing-codex-session', capture_initialize=True)
         self.assertEqual(json.loads(p.stdout.readline())['id'], 1)
         self.wait_health(lambda h: h['version'] == CURRENT_VERSION)

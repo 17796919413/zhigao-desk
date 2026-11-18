@@ -1,12 +1,12 @@
-// Transport presence and a successful project-bound tool call are separate facts.
+// Connection consent belongs to a live AI session, not to a brand.
 export function verifiedConnection(agent, projectId) {
   const v=agent.verification;
-  return agent.state==='online' && !!projectId && v?.projectId===projectId && agent.clients.includes(v.client);
+  return agent.state==='online' && !!v && agent.clients.includes(v.client);
 }
 
 export function connectionLabel(agent, projectId) {
   if(verifiedConnection(agent,projectId))return ['AI 可用','on'];
-  return ({off:['未连接 AI',''],connecting:['正在连接…','amber'],reconnecting:['正在恢复连接…','amber'],offline:['暂时无法连接','red'],waiting:['网页已连接 · 等待 AI','amber'],online:['客户端在线 · 待验证','amber'],'other-tab':['其他页面已连接','amber']})[agent.state]||['未连接 AI',''];
+  return ({off:['未连接 AI',''],connecting:['正在连接…','amber'],reconnecting:['正在恢复连接…','amber'],offline:['暂时无法连接','red'],waiting:['网页已连接 · 等待 AI','amber'],online:['等待接入','amber'],'other-tab':['其他页面已连接','amber']})[agent.state]||['未连接 AI',''];
 }
 
 // Identifies this loaded page, not a credential or a connection claim.

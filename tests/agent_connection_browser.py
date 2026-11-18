@@ -9,9 +9,11 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import subprocess
 import threading
 import time
+import traceback
 import urllib.request
 from playwright.sync_api import sync_playwright
 from mcp_client_fixture import MCP
@@ -55,11 +57,19 @@ home = OUT / 'isolated-home'
 home.mkdir(exist_ok=True)
 script = OUT / 'connector.mjs'
 source = (ROOT / 'zhigao-connector.mjs').read_text(encoding='utf-8').replace('os.homedir()', json.dumps(str(home)))
+if not os.environ.get('ZHIGAO_SESSION_FIXTURES_DIR'):
+    # These cases model standalone MCP clients. Do not attach their synthetic
+    # clientInfo names to the real Codex instance running this test harness.
+    # application_session_matrix separately tests the unmodified OS discovery.
+    source=source.replace('me.owner=await discoverClientOwner(me.name);','me.owner=null;')
 script.write_text(source if REAL_IDLE else source.replace('}, 25000)', '}, 600)').replace('pageStale:120000', 'pageStale:2500')
-                  .replace('now - c.seen > 90000', 'now - c.seen > 2000')
+                  .replace('now - c.seen > 90000', 'now - c.seen > 10000')
                   .replace('}, 5000).unref();', '}, 200).unref();'), encoding='utf-8')
 env = {**os.environ, 'ZHIGAO_PORT': str(port), 'ZHIGAO_AUTO_UPDATE': '0', 'ZHIGAO_REGISTER_URI': '0', 'ZHIGAO_ORIGINS': origin}
 log = (OUT / 'connector.log').open('w', encoding='utf-8')
+env.update(ZHIGAO_LARK_CLI=str(ROOT/'tests/grid_access_lark.mjs'), ZHIGAO_ACCESS_FIXTURE=str(home))
+(home/'table.json').write_text('{}')
+(home/'authorized').touch()
 hub = subprocess.Popen(['node', str(script), 'hub'], env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
 client = None
 results = []
@@ -101,7 +111,7 @@ def stale_heartbeat_failure(page):
 
 def stale_heartbeat_success(page):
     page.evaluate("""()=>{const f=window.fetch;window.dropPoll=false;window.fetch=async(...args)=>{
-      const u=String(args[0]);if(u.endsWith('/page/poll')&&dropPoll)throw new TypeError('newer request failed');
+      const u=String(args[0]);if((u.endsWith('/page/poll')||u.endsWith('/page/heartbeat'))&&dropPoll)throw new TypeError('newer request failed');
       if(u.endsWith('/page/heartbeat')&&!window.held){window.held=true;const body=await(await f(...args)).json();return new Promise(resolve=>window.releaseBeat=()=>resolve({ok:true,json:async()=>body}));}
       return f(...args);
     };}""")
@@ -170,7 +180,7 @@ def outage_and_recovery(page):
     page.wait_for_function("a.agent.state==='reconnecting'", timeout=5000)
     page.screenshot(path=str(OUT / 'reconnecting.png'), full_page=True)
     page.wait_for_function("a.agent.state==='offline'", timeout=25000)
-    assert '暂时无法连接' in page.locator('[data-status="ai"]').inner_text()
+    assert '连接中断' in page.locator('[data-status="ai"]').inner_text()
     assert '连接器未运行' not in page.locator('[data-connection="ai"] .connect-row-head').inner_text()
     assert health()['app'] == 'zhigao', 'The service remains running during a browser network failure'
     page.screenshot(path=str(OUT / 'offline.png'), full_page=True)
@@ -205,7 +215,16 @@ def suspended_transport_and_resume(page):
 def hub_exit_and_client_takeover(page):
     hub.terminate()
     hub.wait(timeout=10)
-    page.wait_for_function("a.agent.state==='reconnecting'", timeout=2000)
+    # Takeover can finish between two page heartbeats. Require recovery and
+    # the correct listener, not an observable transient amber frame.
+    deadline=time.monotonic()+12
+    while time.monotonic()<deadline:
+        try:
+            if health()['pid']==client.p.pid:
+                break
+        except OSError:
+            pass
+        page.wait_for_timeout(100)
     online(page)
     assert health()['pid'] == client.p.pid
     assert not client.call('zhigao_status').get('isError')
@@ -229,9 +248,9 @@ def multiple_tabs(page):
 
 def invitation_and_verified_project(page):
     # Initialized MCP/heartbeats alone must not count as successful project access.
-    assert '待验证' in page.locator('#agent-chip').inner_text()
+    assert '等待接入' in page.locator('#agent-chip').inner_text()
     page.get_by_role('button', name='连接与授权', exact=True).click()
-    button = page.get_by_role('button', name='复制网址和接入指令', exact=True)
+    button = page.get_by_role('button', name='复制接入指令', exact=True)
     assert button.is_visible()
     page.evaluate("()=>{navigator.clipboard.writeText=async value=>window.copiedInvitation=value}")
     button.click()
@@ -256,7 +275,7 @@ def invitation_and_verified_project(page):
     payload=json.loads(reply['content'][0]['text'])
     assert payload['currentProjectId']
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
-    assert page.evaluate('(async()=>{const {verifiedConnection}=await import("/connection-status.js");return verifiedConnection(a.agent,"wrong-project-id")})()') is False
+    assert page.evaluate('(async()=>{const {verifiedConnection}=await import("/connection-status.js");return verifiedConnection(a.agent,"another-project-id")})()') is True
     page.screenshot(path=str(OUT/'onboarding-verified.png'),full_page=True)
     # A real successful call stays verified across refresh while that client is live.
     page.reload();page.wait_for_selector('#agent-chip')
@@ -265,6 +284,7 @@ def invitation_and_verified_project(page):
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=5000)
     page.get_by_role('button', name='连接与授权', exact=True).click()
     assert page.locator('[data-status="ai"]').inner_text() == 'AI 可用'
+    page.wait_for_function("document.querySelector('[data-status=feishu]')?.textContent==='已登录'")
     page.screenshot(path=str(OUT/'refresh-verified-desktop.png'),full_page=True)
     page.set_viewport_size({'width':390,'height':844})
     page.screenshot(path=str(OUT/'refresh-verified-narrow.png'),full_page=True)
@@ -291,13 +311,13 @@ def verification_project_scope(page):
     page.locator('[data-action="new-project"]').click()
     page.locator('#new-project-name').fill('连接验证合成品牌乙')
     page.locator('[data-action="create-project"]').click()
-    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('待验证')")
+    page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
     page.reload();page.wait_for_selector('#agent-chip')
     page.evaluate("async()=>window.a=await import('/agent.js')")
     online(page)
-    assert '待验证' in page.locator('#agent-chip').inner_text()
+    assert 'AI 可用' in page.locator('#agent-chip').inner_text()
     assert client.call('zhigao_status', {'project':original}).get('isError')
-    assert '待验证' in page.locator('#agent-chip').inner_text()
+    assert 'AI 可用' in page.locator('#agent-chip').inner_text()
     page.locator('.navbtn[data-page="rules"]').click()
     page.locator('[data-setting="project"]').select_option(original)
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
@@ -313,7 +333,7 @@ def verification_explicit_disconnect(page):
     assert page.evaluate('a.agent.state') == 'off'
     page.evaluate('void a.startAgent()')
     online(page)
-    assert '待验证' in page.locator('#agent-chip').inner_text()
+    assert '等待接入' in page.locator('#agent-chip').inner_text()
 
 
 def verification_network_recovery(page):
@@ -338,12 +358,31 @@ def verification_client_replacement(page):
     page.reload();page.wait_for_selector('#agent-chip')
     page.evaluate("async()=>window.a=await import('/agent.js')")
     online(page)
-    # A new process must perform a fresh status round trip automatically; an old
-    # proof alone must never be treated as verification of the new connection.
+    # A new application session cannot reuse the former session's green light.
+    page.wait_for_timeout(3000)
+    assert '等待接入' in page.locator('#agent-chip').inner_text()
+    assert not client.call('zhigao_status').get('isError')
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=8000)
-    # The fresh check may finish before reload. Its server timestamp survives
-    # navigation; the page-local log intentionally does not.
     page.wait_for_function('(previous)=>a.agent.verification?.at>previous',arg=previous_at,timeout=8000)
+
+
+def stale_verification_ack(page):
+    global client
+    assert not client.call('zhigao_status').get('isError')
+    page.evaluate('''()=>{const original=window.fetch;window.fetch=async(url,init)=>{
+      const response=await original(url,init);
+      if(String(url).endsWith('/page/result')&&!window.releaseStatusAck){
+        return new Promise(resolve=>window.releaseStatusAck=()=>resolve(response));
+      }return response;
+    }}''')
+    assert not client.call('zhigao_status').get('isError')
+    page.wait_for_function("typeof window.releaseStatusAck==='function'")
+    client.close();client=None
+    page.wait_for_function("a.agent.state==='waiting'")
+    client=MCP(script,env,log,page);online(page)
+    assert '等待接入' in page.locator('#agent-chip').inner_text()
+    page.evaluate('releaseStatusAck()');page.wait_for_timeout(500)
+    assert '等待接入' in page.locator('#agent-chip').inner_text(), 'old status acknowledgement revived an exited AI session'
 
 
 def verification_hub_replacement(page):
@@ -351,16 +390,13 @@ def verification_hub_replacement(page):
     assert not client.call('zhigao_status').get('isError')
     page.wait_for_function('a.agent.verification?.at')
     previous_at=page.evaluate('a.agent.verification.at')
-    client.close(); client = None
     hub.terminate(); hub.wait(timeout=10)
-    page.wait_for_function("a.agent.state!=='online'", timeout=8000)
     hub = subprocess.Popen(['node', str(script), 'hub'], env=env, stdout=log, stderr=log,
                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-    client = MCP(script, env, log, page)
     page.reload(); page.wait_for_selector('#agent-chip')
     page.evaluate("async()=>window.a=await import('/agent.js')")
     page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')", timeout=12000)
-    page.wait_for_function('(previous)=>a.agent.verification?.at>previous',arg=previous_at,timeout=8000)
+    assert page.evaluate('a.agent.verification.at')==previous_at
 
 
 def verification_idle_refresh(page):
@@ -373,6 +409,126 @@ def verification_idle_refresh(page):
     page.screenshot(path=str(OUT/'idle-refresh-verified.png'),full_page=True)
 
 
+def idle_surviving_client(page):
+    assert not client.call('zhigao_status').get('isError')
+    # Read the acknowledged proof, not the page's optimistic progress event.
+    page.wait_for_timeout(10500 if REAL_IDLE else 400)
+    original=page.evaluate('a.agent.verification.at')
+    other=MCP(script,env,log,page,name='isolated-review-test')
+    try:
+        assert not other.call('zhigao_status').get('isError')
+        page.wait_for_function('t=>a.agent.verification?.at>t',arg=original)
+    finally:
+        other.close()
+    page.wait_for_timeout(95000 if REAL_IDLE else 3000)
+    assert page.evaluate('a.agent.verification?.at')==original, 'still-online client lost its own verification'
+    page.reload();page.wait_for_function("document.querySelector('#agent-chip')?.textContent.includes('AI 可用')")
+
+
+def automatic_feishu_status(page):
+    def assert_status(label):
+        page.get_by_role('button',name='连接与授权',exact=True).click()
+        page.wait_for_function("label=>document.querySelector('[data-status=feishu]')?.textContent===label",arg=label,timeout=6000)
+    assert_status('已登录')
+    (home/'authorized').unlink()
+    try:
+        page.reload();assert_status('待登录飞书')
+        page.screenshot(path=str(OUT/'expired-feishu.png'))
+    finally:
+        (home/'authorized').touch()
+    page.reload();assert_status('已登录')
+
+
+class OwnerMCP(MCP):
+    def close(self):
+        if self.p.poll() is None:
+            self.rpc('fixture/close',{})
+            self.p.wait(timeout=15)
+
+
+def feishu_stale_response_and_wake(page):
+    page.get_by_role('button',name='连接与授权',exact=True).click()
+    page.wait_for_function("document.querySelector('[data-status=feishu]')?.textContent==='已登录'")
+    calls=(home/'calls.jsonl').read_text().count('\n')
+    page.wait_for_timeout(800)
+    assert (home/'calls.jsonl').read_text().count('\n')==calls, 'heartbeats must not flood auth checks'
+    page.evaluate('''()=>{const original=window.fetch;window.fetch=async(url,init)=>{
+      const response=await original(url,init);
+      if(String(url).endsWith('/page/feishu')&&!window.releaseFeishu){
+        return new Promise(resolve=>window.releaseFeishu=()=>resolve(response));
+      }return response;
+    }}''')
+    page.locator('[data-action="connect-check"]').click()
+    page.wait_for_function("typeof window.releaseFeishu==='function'")
+    (home/'authorized').unlink()
+    try:
+        result=client.call('zhigao_setup_status',{'verifyFeishu':True})
+        assert not result.get('isError'),result
+        page.evaluate('releaseFeishu()')
+        page.wait_for_function("document.querySelector('[data-status=feishu]')?.textContent==='待登录飞书'")
+        page.wait_for_timeout(500)
+        assert page.locator('[data-status=feishu]').inner_text()=='待登录飞书'
+    finally:
+        (home/'authorized').touch()
+    page.evaluate('''()=>{const now=Date.now;Date.now=()=>now()+300001;window.dispatchEvent(new Event('focus'))}''')
+    page.wait_for_function("document.querySelector('[data-status=feishu]')?.textContent==='已登录'")
+
+
+def application_session_matrix(page):
+    global client, hub
+    fixture_dir=Path(os.environ['ZHIGAO_SESSION_FIXTURES_DIR'])
+    evidence=[]
+    for name,exe in [('codex-mcp-client','codex.exe'),('Claude Code','claude.exe'),('WorkBuddy','WorkBuddy.exe'),('DeepSeek Harness','dsh.exe')]:
+        page.evaluate('a.stopAgent()');client.close()
+        command=[str(fixture_dir/exe),shutil.which('node'),str(script)]
+        client=OwnerMCP(script,env,log,page,name=name,command=command)
+        print(json.dumps({'application':name,'stage':'native owner initialized'},ensure_ascii=False),flush=True)
+        page.evaluate('void a.startAgent()');online(page)
+        assert '等待接入' in page.locator('#agent-chip').inner_text()
+        assert not client.call('zhigao_status').get('isError')
+        page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+        proof=page.evaluate('a.agent.verification.at')
+        page.locator('.navbtn[data-page="rules"]').click()
+        page.locator('[data-action="new-project"]').click()
+        page.locator('#new-project-name').fill(name+' 合成品牌')
+        page.locator('[data-action="create-project"]').click()
+        assert 'AI 可用' in page.locator('#agent-chip').inner_text()
+        # No MCP heartbeat at all. The independently verified application owner
+        # remains alive beyond the old connector's expiry threshold.
+        client.rpc('fixture/stop',{})
+        page.wait_for_timeout(95000 if REAL_IDLE else 3000)
+        assert page.evaluate('a.agent.verification.at')==proof
+        # The hub may restart while the AI is alive and between MCP calls.
+        hub.terminate();hub.wait(timeout=10)
+        hub=subprocess.Popen(['node',str(script),'hub'],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        page.reload();page.wait_for_selector('#agent-chip');page.evaluate("async()=>window.a=await import('/agent.js')")
+        page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')",timeout=12000)
+        assert page.evaluate('a.agent.verification.at')==proof
+        client.rpc('fixture/start',{})
+        client.rpc('initialize',{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':name,'version':'fixture'}})
+        page.wait_for_timeout(500)
+        assert page.evaluate('a.agent.verification.at')==proof
+        page.get_by_role('button',name='连接与授权',exact=True).click()
+        page.wait_for_function("document.querySelector('[data-status=feishu]')?.textContent==='已登录'")
+        page.screenshot(path=str(OUT/(exe+'-session-retained.png')))
+        client.close()
+        page.wait_for_function("a.agent.state==='waiting'",timeout=25000 if REAL_IDLE else 8000)
+        assert 'AI 可用' not in page.locator('#agent-chip').inner_text()
+        # Same app name, new PID/start time: a copied browser marker cannot grant
+        # a new session permission, even after a refresh and several heartbeats.
+        client=OwnerMCP(script,env,log,page,name=name,command=command)
+        online(page);page.reload();page.wait_for_selector('#agent-chip')
+        page.evaluate("async()=>window.a=await import('/agent.js')");online(page)
+        page.wait_for_timeout(3000)
+        assert '等待接入' in page.locator('#agent-chip').inner_text()
+        assert not client.call('zhigao_status').get('isError')
+        page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')")
+        evidence.append({'client':name,'brandSwitch':True,'refresh':True,'childRestart':True,'hubRestartWithoutChild':True,'appExitRevokes':True,'sameNameRestartRequiresConnect':True,'idleSeconds':95 if REAL_IDLE else 3,'kind':'synthetic native owner + real MCP protocol, not installed app UI'})
+        print(json.dumps({'application':name,'stage':'lifecycle passed'},ensure_ascii=False),flush=True)
+    (OUT/'application-matrix.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
+    client.close();client=MCP(script,env,log,page)
+
+
 def invitation_recovery_matrix(page):
     global client
     for name in ['codex-mcp-client','Claude Code','WorkBuddy','DeepSeek Harness']:
@@ -381,7 +537,7 @@ def invitation_recovery_matrix(page):
         assert page.evaluate('a.agent.state')=='off'
         page.get_by_role('button',name='连接与授权',exact=True).click()
         page.evaluate("()=>{navigator.clipboard.writeText=async()=>{throw Error('test manual copy')}}")
-        page.get_by_role('button',name='复制网址和接入指令',exact=True).click()
+        page.get_by_role('button',name='复制接入指令',exact=True).click()
         invitation=page.locator('#connect-invitation').input_value()
         assert 'AI 可用' not in page.locator('[data-status=ai]').inner_text()
         client=MCP(script,env,log,page,name=name);online(page)
@@ -394,10 +550,12 @@ def invitation_recovery_matrix(page):
     client.close();client=MCP(script,env,log,page)
 
 
-CASES = [invitation_recovery_matrix,invitation_and_verified_project, activity_toolbar_removed, verification_project_scope, verification_explicit_disconnect, verification_network_recovery,
+CASES = [idle_surviving_client, automatic_feishu_status, feishu_stale_response_and_wake, invitation_recovery_matrix,invitation_and_verified_project, activity_toolbar_removed, verification_project_scope, verification_explicit_disconnect, verification_network_recovery,
          wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
          stopped_poll_cannot_reconnect, restored_page_session, multiple_tabs,
-         outage_and_recovery, suspended_transport_and_resume, verification_client_replacement, verification_hub_replacement, verification_idle_refresh, hub_exit_and_client_takeover]
+         outage_and_recovery, suspended_transport_and_resume, verification_client_replacement, stale_verification_ack, verification_hub_replacement, verification_idle_refresh, hub_exit_and_client_takeover]
+if os.environ.get('ZHIGAO_SESSION_FIXTURES_DIR'):
+    CASES.insert(0,application_session_matrix)
 try:
     for _ in range(80):
         try:
@@ -428,7 +586,7 @@ try:
                 result = {'name': case.__name__, 'passed': True}
             except Exception as error:
                 page.screenshot(path=str(OUT / (case.__name__ + '-failure.png')), full_page=True)
-                result = {'name': case.__name__, 'passed': False, 'error': str(error), 'pageErrors': errors,
+                result = {'name': case.__name__, 'passed': False, 'error': str(error), 'traceback':traceback.format_exc(), 'pageErrors': errors,
                           'failedRequests':failed_requests,'diagnostic': page.evaluate("({state:window.a?.agent.state,held:!!window.held,releasePoll:typeof window.releasePoll,trace:window.pollTrace})")}
             finally:
                 page.evaluate('window.a?.stopAgent()')

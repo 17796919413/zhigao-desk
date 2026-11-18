@@ -24,11 +24,6 @@ let pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
 const preference=()=>{try{return localStorage.getItem(KEY);}catch{return null;}};
 export const agentWanted=()=>preference()==='on';
 const remember=on=>{try{localStorage.setItem(KEY,on?'on':'off');}catch{}};
-const previousVerification=projectId=>{try{return JSON.parse(localStorage.getItem(VERIFIED_KEY)||'{}')[projectId];}catch{return null;}};
-function rememberVerification(v){
- if(!agentWanted()||!v?.projectId||!v.client)return;
- try{const saved=JSON.parse(localStorage.getItem(VERIFIED_KEY)||'{}');delete saved[v.projectId];saved[v.projectId]={client:v.client,at:v.at};localStorage.setItem(VERIFIED_KEY,JSON.stringify(Object.fromEntries(Object.entries(saved).slice(-128))));}catch{}
-}
 const set=(state,extra={})=>{Object.assign(agent,{state},extra);if(state!=='online'||!agent.clients.includes(agent.verification?.client))agent.verification=null;ctx?.changed();};
 const sleep=(ms,signal)=>new Promise(r=>{const done=()=>{clearTimeout(t);signal?.removeEventListener('abort',done);r();},t=setTimeout(done,ms);if(signal?.aborted)done();else signal?.addEventListener('abort',done,{once:true});});
 async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data),signal:signal||AbortSignal.timeout(30000),cache:'no-store'});if(!r.ok){const body=await r.json().catch(()=>({}));throw Object.assign(Error(body.error||`连接器返回 ${r.status}`),{code:body.code,status:r.status});}return r.json();}
@@ -100,21 +95,21 @@ const tools={
   return{ok:true,imported:list.length,message:`已导入 ${list.length} 条待确认反馈条目，等用户在网页上逐条确认。`};}
 };
 
-async function handle(call){
+async function handle(call,connection){
  const label=TOOL_LABELS[call.name]||call.name,at=new Date().toISOString();
+ const callPageId=pageId;
  activeCall={id:call.id,name:call.name,startedAt:at,sequence:0,phase:'executing'};
- try{await post('/page/started',{pageId,id:call.id});}catch(e){if(e.code==='CALL_EXPIRED'){activeCall=null;return;}if(e.status!==404){activeCall=null;throw e;}}
+ try{await post('/page/started',{pageId:callPageId,id:call.id});}catch(e){if(e.code==='CALL_EXPIRED'){activeCall=null;return;}if(e.status!==404){activeCall=null;throw e;}}
  let res;
  try{const fn=tools[call.name];if(!fn)throw Error(`网页不支持工具 ${call.name}，请刷新工作台到最新版本。`);res={id:call.id,result:await fn(call.args||{})};agent.log.unshift({at,client:call.client,label,ok:true,...(res.result?.savedPath?{path:res.result.savedPath}:{})});}
  catch(e){res={id:call.id,error:e.message||String(e),errorCode:e.code||'REVIEW_ERROR',details:e.details||{}};agent.log.unshift({at,client:call.client,label,ok:false,error:res.error});}
  activeCall.phase='delivering';
  agent.log.length=Math.min(agent.log.length,30);
- if(call.name==='zhigao_status'&&res.result?.connected&&res.result.currentProjectId===S().settings.selected){agent.verification={projectId:res.result.currentProjectId,client:call.client,at};}
  if(WRITES.has(call.name)&&res.result&&!call.args?.dryRun&&res.result.message)ctx.notify(call.name==='zhigao_submit_review'?(call.client||'AI')+' 已提交审稿建议':(call.client||'AI')+' '+res.result.message);
  ctx.changed();
   // Retry delivery of the same result, never re-execute the underlying tool.
   let delivered=false,expired=false;
-  for(let attempt=0;attempt<3&&!delivered;attempt++)try{const ack=await post('/page/result',{...res,pageId});if(ack.accepted===false){expired=true;break;}delivered=true;rememberVerification(ack.verification);}catch(error){if(error.code==='PAGE_SESSION_CHANGED')break;await sleep(500*(attempt+1));}
+  for(let attempt=0;attempt<3&&!delivered;attempt++)try{const request=++connection.sequence,ack=await post('/page/result',{...res,pageId:callPageId});if(ack.accepted===false){expired=true;break;}delivered=true;if(Object.hasOwn(ack,'verification'))connection.success(ack,callPageId,request);}catch(error){if(error.code==='PAGE_SESSION_CHANGED')break;await sleep(500*(attempt+1));}
   if(!delivered){agent.log.unshift({at:new Date().toISOString(),label:'结果回传失败',ok:false,error:expired?'请求已停止等待，操作结果未交给 AI；请检查已保存进度后续审，勿重复提交。':'操作已执行，但连接器未确认接收；请检查连接与稿件状态，勿重复提交。'});ctx.changed();}
   activeCall=null;
 }
@@ -137,7 +132,7 @@ async function loop(signal,connection){
    if(signal.aborted)break;
    hello=false;wait=3000;
    connection.success(r,id,request);
-   for(const c of r.calls||[]){if(signal.aborted)break;await handle(c);}}
+   for(const c of r.calls||[]){if(signal.aborted)break;await handle(c,connection);}}
   catch(e){
    if(signal.aborted)break;hello=true;
    // Waking/retrying deliberately cancels a long poll. It is not a network failure.
@@ -155,28 +150,13 @@ async function loop(signal,connection){
  }
 }
 async function run(){
- abort=new AbortController();const signal=abort.signal;let beating=false,restoring=false,nextRestore=0;
- const restore=async()=>{
-  if(restoring||signal.aborted||activeCall||agent.verification||Date.now()<nextRestore)return;
-  const id=pageId,projectId=S().settings.selected,previous=previousVerification(projectId);
-  if(!previous?.client||!agent.clients.includes(previous.client))return;
-  restoring=true;
-  try{
-   // This saved marker requests a new read-only round trip. It never makes an
-   // expired session verified just because a client has the same display name.
-   const request=new AbortController(),cancel=()=>request.abort(),deadline=setTimeout(cancel,30000);
-   signal.addEventListener('abort',cancel,{once:true});
-   try{await post('/page/revalidate',{pageId:id,projectId,client:previous.client},request.signal);}finally{clearTimeout(deadline);signal.removeEventListener('abort',cancel);}
-  }catch{}finally{restoring=false;nextRestore=Date.now()+10000;}
- };
+ abort=new AbortController();const signal=abort.signal;let beating=false;
  set('connecting');
  const connection={sequence:0,settled:0,failedAt:null,
   success(r,id,request){
    if(signal.aborted||id!==pageId||request<this.settled)return;
    this.settled=request;this.failedAt=null;
     set(r.clients?.length?'online':'waiting',{clients:r.clients||[],version:r.version||agent.version,error:null,...(Object.hasOwn(r,'verification')?{verification:r.verification}:{})});
-    rememberVerification(agent.verification);
-    if(agent.state==='online'&&!agent.verification)void restore();
   },
   failure(error,request,id){
    // Neither late failures nor late successes may overwrite a newer response.

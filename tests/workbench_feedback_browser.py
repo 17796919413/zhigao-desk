@@ -54,14 +54,14 @@ try:
   page.evaluate("async()=>window.feedbackAgent=await import('/agent.js')")
   page.wait_for_function("feedbackAgent.agent.state==='online'")
   label=page.locator('#agent-chip .agent-state-label').inner_text()
-  assert label=='客户端在线 · 待验证',{'label':label,'agent':page.evaluate("import('/agent.js').then(m=>m.agent)")}
+  assert label=='等待接入',{'label':label,'agent':page.evaluate("import('/agent.js').then(m=>m.agent)")}
   project_id=page.locator('[data-setting=project]').input_value()
   status=call('zhigao_status',{'project':project_id})
   assert status['connected'] and status['currentProjectId']==project_id,status
   page.wait_for_function("document.querySelector('#agent-chip .agent-state-label')?.textContent==='AI 可用'")
   verification=page.evaluate("import('/agent.js').then(m=>m.agent.verification)")
   assert verification['projectId']==project_id and verification['client']=='isolated-review-test',verification
-  passed('客户端在线先显示待验证；真实 MCP 读取当前项目后显示 AI 可用')
+  passed('客户端在线先显示等待接入；真实 MCP 读取当前项目后显示 AI 可用')
   second=context.new_page();second.goto(origin);second.wait_for_function("document.querySelector('#agent-chip')?.textContent?.includes('其他页面已连接')")
   second.close();passed('同浏览器第二标签页不会抢占连接')
   page.evaluate("async()=>{const m=await import('/agent.js');m.stopAgent();}")

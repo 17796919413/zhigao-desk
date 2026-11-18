@@ -1,9 +1,9 @@
 """Actual stdio MCP client used only against the isolated test connector."""
 import json,queue,threading,subprocess,os,time
 class MCP:
- def __init__(self,script,env,log,page=None,name='isolated-review-test'):
+ def __init__(self,script,env,log,page=None,name='isolated-review-test',command=None):
   self.page=page
-  self.p=subprocess.Popen(['node',str(script)],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True,encoding='utf-8',creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0);self.q=queue.Queue();self.n=0
+  self.p=subprocess.Popen(command or ['node',str(script)],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True,encoding='utf-8',creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0);self.q=queue.Queue();self.n=0
   def read():
    for line in self.p.stdout:
     try:self.q.put(json.loads(line))
