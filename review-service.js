@@ -9,7 +9,7 @@ import {hydrateLibraryProject,materializeLibraryFile} from './library-assets.js'
 import {reviewNotes,effectiveRules} from './brand.js';
 import {flowOf,currentDocuments} from './model.js';
 import {createKnowledgeCache,stableJSON} from './review-knowledge.js';
-import {basisChanges,basisUpdateSummary,contextPage,contextSections,contextSummary,mergeReviewChecks,previousChecks,unreadContext,validateCheckIds} from './review-context.js';
+import {basisChanges,basisUpdateSummary,contextPage,contextSections,contextSummary,inlineContext,mergeReviewChecks,previousChecks,unreadContext,validateCheckIds} from './review-context.js';
 export const REVIEW_LEASE_MS=15*60*1000;
 export const BATCH_STATES={queued:'排队中',reviewing:'审稿中',pending:'待确认',partial:'审核未完成',failed:'失败',interrupted:'已中断',skipped:'已跳过'};
 export const canDeepReview=t=>!t.reviewReadError&&(!!t.cells?.length||['office-pending','docx','xlsx','pptx','pdf','video','image'].includes(t.fmt));
@@ -131,7 +131,7 @@ export function createReviewService(ctx){
    if(Date.parse(e.leaseExpiresAt)-Date.now()<5*60*1000){e.leaseExpiresAt=new Date(Date.now()+REVIEW_LEASE_MS).toISOString();await persistEntry(t,b,e);current.guard();}
    return current;
  }
- async function brief({docId,batchId,retry=false,rereview=false}={}){
+ async function brief({docId,batchId,retry=false,rereview=false,compact=false}={}){
   await ctx.ensureLibraryCleanup?.();await recover();const t=doc(docId);checkDoc(t);
   const active=(S().batches||[]).find(b=>b.id!==batchId&&b.entries.some(e=>e.docId===docId&&['queued','reviewing'].includes(e.status)));if(active)fail('BATCH_REQUIRED','这份稿件已进入另一个批次，请使用返回的 batchId。',{batchId:active.id});
   let {b,e}=leaseFor(t,batchId);
@@ -148,11 +148,11 @@ export function createReviewService(ctx){
    if(t.ai&&!t.fullReviewPending&&!reviewNeedsAttention(t,project(t.projectId))&&!rereview&&!e?.rereview)fail('REREVIEW_REQUIRED','这份稿件已有结果；补漏或重审请调用 zhigao_reopen_review。');
    if(e&&['failed','interrupted','reviewing','skipped'].includes(e.status)&&!retry&&!rereview)fail('RETRY_REQUIRED','重新领取需 retry:true。',{status:e.status});
    const fresh=await newLease(t,rereview||!!e?.rereview,{...current,prior},restore);
-   if(b){Object.assign(e,fresh);delete e.errorCode;await persist(b);}else{e=fresh;await persistEntry(t,null,e);}
+   if(b){Object.assign(e,fresh);delete e.errorCode;}else e=fresh;
   }
-  current.guard();const context=contextSections(t,current.manifest,e.media,e),p=project(t.projectId),summary=contextSummary(context,e);await persistEntry(t,b,e);current.guard();
+  current.guard();const context=contextSections(t,current.manifest,e.media,e),p=project(t.projectId),inline=compact?inlineContext(e,context):null,summary=contextSummary(context,e);await persistEntry(t,b,e);current.guard();
   return {protocolVersion:ASSURANCE_VERSION,docId:t.id,project:{id:p.id,name:p.name},basis:{projectId:current.manifest.projectId,version:current.manifest.version,hash:current.manifest.hash},...(batchId?{batchId}:{}),reviewToken:e.reviewToken,snapshot:e.snapshot,leaseExpiresAt:e.leaseExpiresAt,leaseDurationMs:REVIEW_LEASE_MS,reused,resume:{restored:restore,saved:Object.fromEntries(Object.entries(e.savedChecks||{}).map(([k,v])=>[k,v.length])),readAssets:Object.keys(e.mediaReceipts||{}).length},context:summary,instruction:aiContextPrompt(t,e.snapshot)+String.fromCharCode(10)+assuranceInstruction(current.manifest),
-   ...(basisUpdate||e.basisChanges?{basisUpdate:basisUpdate||basisUpdateSummary(e.basisChanges)}:{}),
+   ...(inline?{inlineContext:inline,inlineInstruction:'逐条核对 inlineContext 内的原文；其余未完成分区继续分页，素材仍须读取。'}:{}),...(basisUpdate||e.basisChanges?{basisUpdate:basisUpdate||basisUpdateSummary(e.basisChanges)}:{}),
    ...(!basisUpdate&&!e.basisChanges&&e.rereview&&t.ai?{previousResult:{changes:t.ai.changes,warnings:t.ai.warnings,coverage:t.ai.coverage},replacement:'本次完整替换旧建议。保留仍有效的旧建议并补齐遗漏，旧结果在成功提交后进入历史。'}:{}),
    howToSubmit:'先读取未完成的必读分区，context.complete=true 可跳过，部分已读使用该分区 nextCursor 续读。resume.restored=true 时 savedChecks 分区提供同版本已保存的实际核对记录；只有回执但没有实际核对记录/视觉上下文的素材仍须看图。小批量素材可用 read_review_assets（最多4项）。提交可省略已保存字段。BASIS_CHANGED 后必须按新版本重新核对。审核结果仍待人工复核。'};
  }

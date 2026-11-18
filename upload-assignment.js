@@ -57,7 +57,6 @@ export function createUploadQueue(ctx){
  const project=row=>{const p=state().settings.projects.find(p=>p.id===row.projectId);if(!p||p.status==='ended')throw Error('原品牌已删除或结束，请恢复品牌后重试。');return projectForActivity(p,activityOf(row));};
  const selected=row=>state().settings.selected===row.projectId&&selectedActivity(state().settings.projects.find(p=>p.id===row.projectId))===activityOf(row);
  async function commit(row){
-  const issues=assignmentIssues(row.draft,row.choices);if(issues.length)throw Error(issues.join('；'));
   if(!selected(row))throw Error('品牌或活动已切换，请回到原活动后确认。');
   const doc=row.doc||await ctx.parseFile(row.file),p=project(row),chosen=row.draft.target==='new'?null:row.choices[Number(row.draft.target)];
   let it=chosen?.id?state().items.find(i=>i.id===chosen.id):null;
@@ -79,18 +78,18 @@ export function createUploadQueue(ctx){
   try{
    const doc=await ctx.parseFile(row.file);row.doc=doc;
    if(!doc.cells.length&&!['xlsx','docx','pdf','video','image','office-pending','pptx'].includes(doc.fmt))throw Error('文件没有可审稿的文字。');
-   const p=project(row);Object.assign(row,uploadProposal(doc,{items:state().items,tasks:state().tasks,project:p,sheets:ctx.liveSheets(p),target:row.target}));
-   if(!selected(row))row.issues.push('品牌或活动已切换，请回到原活动后确认');
-   if(row.issues.length){row.status='choice';row.error=row.issues.join('；');await save(row);}else await commit(row);
+   const p=project(row),proposal=uploadProposal(doc,{items:state().items,tasks:state().tasks,project:p,target:row.target});
+   // Uncertain imports are independent drafts, never accidental revisions of another task.
+   if(row.target&&proposal.issues.some(issue=>issue.includes('与指定任务不同')))throw Error('稿件与指定任务不同，请从工作台单独投入。');
+   Object.assign(row,proposal.issues.length&&!row.target?{draft:{...uploadEvidence(doc),target:'new'},choices:[]}:proposal);
+   await commit(row);
   }catch(e){row.status='failed';row.error=e.message;try{await save(row);}catch{row.error+='；浏览器未保存此文件，请保留原件后重试';}}
   notify();
  }
  function enqueue(fn){const run=chain.then(fn);chain=run.catch(e=>ctx.toast(e.message));return run;}
  return {rows,
   upload(files,options={}){const p=state().settings.projects.find(p=>p.id===state().settings.selected),groupId=uid();const added=[...files].map(file=>({id:uid(),projectId:p.id,activityId:selectedActivity(p),groupId,name:file.name,file,status:'queued',target:options.target}));rows.push(...added);notify();return enqueue(async()=>{for(const row of added){try{await save(row);await prepare(row);}catch(e){row.status='failed';row.error='上传尚未保存：'+e.message;notify();}}});},
-  async restore(){for(const stored of await ctx.loadPending()){if(stored.status==='saved'||rows.some(r=>r.id===stored.uploadId&&r.projectId===stored.projectId))continue;rows.push({...stored,id:stored.uploadId,status:stored.draft?'choice':'failed',error:stored.error||'已恢复未完成的上传，请核对后继续'});}notify();},
-  edit(id,field,value){const row=rows.find(r=>r.id===id);if(!row?.draft||row.status!=='choice')return;row.draft[field]=value;row.error='';enqueue(()=>save(row)).catch(e=>{row.error='输入尚未保存：'+e.message;notify();});},
-  confirm(ids){return enqueue(async()=>{const selectedRows=rows.filter(r=>ids.includes(r.id)&&r.status==='choice');let invalid=false;for(const row of selectedRows){const issues=assignmentIssues(row.draft,row.choices);if(issues.length){row.error=issues.join('；');invalid=true;}}if(invalid){notify();return;}for(const row of selectedRows){row.status='reading';notify();try{await commit(row);}catch(e){row.status='choice';row.error=e.message;try{await save(row);}catch(saveError){row.error+='；'+saveError.message;}}notify();}});},
+  async restore(){for(const stored of await ctx.loadPending()){if(stored.status==='saved'||rows.some(r=>r.id===stored.uploadId&&r.projectId===stored.projectId))continue;rows.push({...stored,id:stored.uploadId,status:'failed',error:stored.error||'上次上传未完成，可重新读取原件'});}notify();},
   retry(id){return enqueue(async()=>{const row=rows.find(r=>r.id===id);if(row&&row.file){await save(row);await prepare(row);}});},
   cancel(id){return enqueue(async()=>{const row=rows.find(r=>r.id===id);if(!row||['reading','saved'].includes(row.status))return;await ctx.removePending('upload:'+id);rows.splice(rows.indexOf(row),1);notify();});}
  };

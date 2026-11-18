@@ -30,9 +30,8 @@ await test('歧义和失败不阻断后续文件；保存后标记防重复，�
  const queue=createUploadQueue({state:()=>state,refresh(){},toast(){},liveSheets:()=>[],parseFile:async f=>{if(f.name==='broken')throw Error('坏文件');return doc(f.name,await f.text());},makeItem:fields=>({...fields,id:'new-'+(++n)}),savePending:async row=>pending.set(row.id,structuredClone(row)),loadPending:async()=>[...pending.values()],removePending:async id=>pending.delete(id),archiveOriginal:async()=>{},commitUpload:async(records,id,guard)=>{guard();for(const [store,row] of records){if(store==='integrations')pending.set(row.id,row);else if(store==='items'){if(!state.items.some(i=>i.id===row.id))state.items.push(row);}else if(store==='tasks')state.tasks.push(row);}}});
  const file=name=>new File(['正文'],name);
  await queue.upload([file('未知.txt'),file('broken'),file('【甲】小红书图文大纲v2.txt'),file('【乙】抖音视频脚本.txt')]);
- assert.deepEqual(queue.rows.map(r=>r.status),['choice','failed','saved','saved']);assert.equal(state.tasks.length,3);assert.equal(state.tasks[1].flow.round,2);assert.deepEqual(state.tasks[0],previous);assert.equal([...pending.values()].filter(r=>r.status!=='saved').length,2);
- for(const [field,value] of Object.entries({author:'丙',platform:'其他',kind:'图文',stage:'初稿',title:'新内容'}))queue.edit(queue.rows[0].id,field,value);
- await queue.confirm([queue.rows[0].id]);assert.equal(state.tasks.length,4);await queue.confirm([queue.rows[0].id]);assert.equal(state.tasks.length,4);
+ assert.deepEqual(queue.rows.map(r=>r.status),['saved','failed','saved','saved']);assert.equal(state.tasks.length,4);assert.equal(state.tasks[2].flow.round,2);assert.deepEqual(state.tasks[0],previous);assert.equal(state.tasks[1].author,'');assert.equal(state.tasks[1].platform,'');
+ assert.equal([...pending.values()].filter(r=>r.status!=='saved').length,1);
  await queue.cancel(queue.rows[1].id);assert.equal([...pending.values()].filter(r=>r.status!=='saved').length,0);
 });
 console.log(JSON.stringify({passed:true,total:checks.length,checks}));

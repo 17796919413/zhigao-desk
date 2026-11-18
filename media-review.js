@@ -47,7 +47,7 @@ export async function inspectReviewMedia(task,verified={}){
   if(fmt==='pptx'){
    for(const path of paths.filter(p=>/^ppt\/(slides\/slide|notesSlides\/notesSlide)\d+\.xml$/.test(p)).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))){
     const d=xml(await zip.file(path).async('string')),text=all(d,'p').map(p=>all(p,'t').map(t=>t.textContent).join('')).filter(Boolean).join('\n');
-    if(text.trim())supplementalText.push({id:'ppt:'+path,address:path,original:text,current:text,note:'品牌反馈附件，只读'});
+    if(text.trim()&&!task.cells?.some(c=>c.id.startsWith(path+'#')))supplementalText.push({id:'ppt:'+path,address:path,original:text,current:text,note:'品牌反馈附件，只读'});
    }
   }
   if(fmt==='docx'){
@@ -62,7 +62,7 @@ export async function inspectReviewMedia(task,verified={}){
   }
  }else if(fmt==='pdf'){
   if(!task.buffer)throw Error('PDF原件缺失。');const pages=task.pages||(await readPdf(task.buffer,verified.onProgress)).pages;
-  for(const p of pages){assets.push(item('page:'+p.n,'pdf-page',`PDF第${p.n}页`,{page:p.n,mimeType:'image/png'}));if(p.text)supplementalText.push({id:'pdf-text:'+p.n,address:`PDF第${p.n}页文字`,original:p.text,current:p.text,note:'PDF只读，修改建议请写入 warnings'});}
+  for(const p of pages){assets.push(item('page:'+p.n,'pdf-page',`PDF第${p.n}页`,{page:p.n,mimeType:'image/png'}));if(p.text&&!task.cells?.some(c=>c.id==="pdf-text:"+p.n))supplementalText.push({id:'pdf-text:'+p.n,address:`PDF第${p.n}页文字`,original:p.text,current:p.text,note:'PDF只读，修改建议请写入 warnings'});}
  }else if(fmt==='image'){
   const readable=safeImage(task.filename);assets.push(item('image:original','image','图片原件',{mimeType:mimeFor(task.filename),readable,coverage:readable?'full':'unsupported'}));if(!readable)blockers.push('当前图片格式或动画尚不能完整审核，请提供静态 PNG/JPG/WebP。');
  }else if(fmt==='video'){

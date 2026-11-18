@@ -30,8 +30,9 @@ export function exactCreatorRows(item,sheets,project){
  if(item.platform)hits=hits.filter(({s,r})=>s.map.platform<0||platformsOf(cellOf(r,s.map,'platform')).includes(item.platform));
  if(project)hits=hits.filter(({s,row})=>rowInActivity(item,s,row,project));
  // An explicit activity does not make a different content title the same task.
- if(project&&item.title)hits=hits.filter(({s,r})=>!activityColumns(s).length||!(s.map.title>=0)||creatorKey(cellOf(r,s.map,'title'))===creatorKey(item.title));
- if(hits.length>1&&item.title){const exact=hits.filter(({s,r})=>creatorKey(cellOf(r,s.map,'title'))===creatorKey(item.title));if(exact.length)hits=exact;}
+ const titleMatches=({s,r})=>{const actual=cellOf(r,s.map,'title'),key=contentKey(item.title,item.author);return creatorKey(actual)===creatorKey(item.title)||!!key&&key===contentKey(actual,item.author);};
+ if(project&&item.title)hits=hits.filter(hit=>!activityColumns(hit.s).length||!(hit.s.map.title>=0)||titleMatches(hit));
+ if(hits.length>1&&item.title){const exact=hits.filter(titleMatches);if(exact.length)hits=exact;}
  return hits;
 }
 // A brand-level sheet cannot disambiguate two activities by creator nickname alone.
@@ -42,6 +43,13 @@ export function activityRowMatch(item,items,sheets,project){
  const conflicts=items.filter(other=>other.id!==item.id&&other.projectId===item.projectId&&activityOf(other)!==activityOf(item)&&(
   other.feishu&&keys.has(other.feishu.sheetId+'|'+other.feishu.key)&&hits.some(({s,row})=>s.id===other.feishu.sheetId&&rowKey(s,row)===other.feishu.key&&(!project||rowInActivity(other,s,row,project)))||exactCreatorRows(other,sheets,project).some(({s,row})=>keys.has(s.id+'|'+rowKey(s,row)))));
  return {hits,conflicts,issues};
+}
+// Resolve only a creator explicitly named by the file, within the freshly read table.
+export function matchDraftRow(doc,item,items,sheets,project){
+ const evidence=creatorEvidence(doc),names=new Set(evidence.names);
+ const candidates=item.author?[item.author]:[...new Set(sheets.flatMap(s=>s.rows.map(r=>creatorKey(cellOf(r,s.map,'author')))).filter(n=>n&&names.has(n)))];
+ if(candidates.length!==1)return {hits:[],conflicts:[],issues:[candidates.length?'稿件中出现多个候选达人，本次未同步。':'稿件没有可唯一匹配的达人，本次未同步。']};
+ return activityRowMatch({...item,author:candidates[0],platform:item.platform||evidence.platform},items,sheets,project);
 }
 export function activityMappingSheets(project,items,sheets){
  const mine=items.filter(i=>i.projectId===project.id&&activityOf(i)===selectedActivity(project));

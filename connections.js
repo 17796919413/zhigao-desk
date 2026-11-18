@@ -36,7 +36,7 @@ export function createConnections(ctx) {
     offline: ['连接中断', '请打开 AI 客户端，点击重新连接。'],
     waiting: ['等待 AI', '把接入指令发给你的 AI。'],
     online: verifiedConnection(ctx.agent,ctx.project().id) ? ['AI 可用', ctx.agent.verification.client] : ['等待接入', '把接入指令发给你的 AI。'],
-    'other-tab': ['其他页面已连接', '请回到已连接的页面，或关闭它后使用此页。'],
+    'other-tab': ['其他页面已连接', '另一页面正在连接。空闲时可切换到此浏览器。'],
   })[ctx.agent.state] || ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'];
 
   function aiGuide() {
@@ -76,7 +76,7 @@ export function createConnections(ctx) {
     const folderLabel = !folderSupported() ? '使用下载' : folderState === 'granted' ? '已关联' : folder ? '待授权' : '未设置';
     const folderDesc = folder ? folder.name : '选择文件夹，自动保存审稿文件。';
     return `<section class="connect-start" aria-label="让 AI 帮你接入"><p>复制指令，发给你正在使用的 AI。</p><div class="connect-actions">${ctx.btn('connect-copy-invitation','复制接入指令','primary')}</div><details class="connect-more"><summary>查看接入指令</summary><textarea id="connect-invitation" aria-label="接入指令" readonly rows="7">${esc(connectionPrompt(location.href,p))}</textarea></details></section><div class="connect-intro-row"><p class="connect-intro">当前品牌：${esc(p.name||'未选择')}</p>${button('connect-update-check',updateBusy?(update?.state==='downloading'?'更新中…':'检查中…'):'检查更新',updateBusy?'disabled':'')}</div>` +updatePanel()+
-      row('ai', 'AI 审稿', aiLabel, aiDesc, ['off','offline','reconnecting','waiting'].includes(ctx.agent.state) ? button('agent-on',ctx.agent.state==='off'?'连接 AI':'重新连接') : '', aiGuide()) +
+      row('ai', 'AI 审稿', aiLabel, aiDesc, ctx.agent.state==='other-tab'?button('agent-on','在此浏览器接入'):['off','offline','reconnecting','waiting'].includes(ctx.agent.state) ? button('agent-on',ctx.agent.state==='off'?'连接 AI':'重新连接') : '', aiGuide()) +
       row('feishu', '飞书同步', fsLabel, fsDesc, button('connect-check', checking ? '检查中…' : '检查连接', checking ? 'disabled' : ''), feishuGuide() + (['connector','update','origin'].includes(feishu.state) ? button('connect-expand', '设置连接器', 'data-section="ai"') : '')) +
       row('folder', '本地归档', folderLabel, folderDesc, folderSupported() && p.id ? button(folder && folderState !== 'granted' ? 'connect-folder-grant' : 'connect-folder-pick', folder ? folderState === 'granted' ? '更换文件夹' : '授权文件夹' : '选择文件夹', `data-pid="${esc(p.id)}"`) : '', `<p>选择文件夹并允许保存。未设置时，可直接下载审稿文件。</p>`) +
       '';
@@ -157,7 +157,7 @@ export function createConnections(ctx) {
     if(action==='connect-update-refresh')location.reload();
     if(action==='connect-copy-invitation'){
       const value=connectionPrompt(location.href,ctx.project());
-      if(!['online','waiting'].includes(ctx.agent.state))void ctx.startAgent();
+      if(!['online','waiting'].includes(ctx.agent.state))void ctx.startAgent({takeOver:true});
       try{await navigator.clipboard.writeText(value);ctx.toast('已复制，粘贴到你的 AI 客户端并发送。');}
       catch{const field=document.getElementById('connect-invitation');field.closest('details').open=true;field.value=value;field.focus();field.select();ctx.toast('请复制已选中的接入指令，粘贴到你的 AI 客户端。');}
     }

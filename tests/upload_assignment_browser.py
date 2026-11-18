@@ -30,60 +30,17 @@ try:
    page.locator('#file-input').set_input_files({'name':name,'mimeType':'text/plain','buffer':text.encode()})
   files=[{'name':n,'mimeType':'text/plain','buffer':t.encode()} for n,t in [('未署名.txt','未标注平台或阶段'),('坏文件.bin','broken'),('【小乙】小红书图文大纲.txt','正文'),('待归属.txt','达人：小丙')]]
   page.locator('#file-input').set_input_files(files)
-  page.wait_for_function("probe.state().tasks.length===1&&document.querySelectorAll('[data-upload-field=stage]').length===2&&document.querySelectorAll('[data-action=wb-upload-retry]').length===1")
-  assert page.locator('[data-action=wb-copy]').is_enabled();assert page.locator('[data-batch-doc]').count()==1
-  assert page.locator('[data-upload-field=platform]').first.input_value()==''
-  assert page.locator('[data-upload-field=kind]').first.input_value()==''
-  assert page.locator('[data-upload-field=stage]').first.input_value()==''
-  passed('未知字段为空，两个待确认和一个失败件不阻断后续明确稿件或批审选择')
-  first=page.locator('[data-upload-id]').filter(has_text='未署名.txt');first.locator('[data-upload-field=author]').fill('小甲');first.locator('[data-upload-field=title]').fill('需要人工确认的内容')
-  page.locator('[data-action=wb-upload-confirm-all]').click();assert len(page.evaluate('probe.state().tasks'))==1
-  assert '请填写平台' in page.locator('[data-upload-id]').filter(has_text='未署名.txt').inner_text()
+  page.wait_for_function("probe.state().tasks.length===3&&document.querySelector('[data-action=wb-upload-retry]')")
+  assert page.locator('[data-upload-field]').count()==0 and page.locator('[data-batch-doc]').count()==3
+  page.reload();page.wait_for_function('window.probe && probe.state().tasks.length===3')
+  assert page.evaluate("JSON.stringify([probe.state().tasks.find(t=>t.filename==='未署名.txt').platform,probe.state().tasks.find(t=>t.filename==='未署名.txt').stage])")=='["",""]'
   page.screenshot(path=str(OUT/'assignment-desktop.png'),full_page=True)
-  page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(OUT/'assignment-narrow.png'),full_page=True);assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1');page.set_viewport_size({'width':1440,'height':1000})
-  page.reload();page.wait_for_function('!!window.probe');first=page.locator('[data-upload-id]').filter(has_text='未署名.txt');assert first.locator('[data-upload-field=author]').input_value()=='小甲';assert first.locator('[data-upload-field=title]').input_value()=='需要人工确认的内容'
-  passed('缺字段不能确认；原件、归属表单和错误在刷新后恢复')
-  for name,author in [('未署名.txt','小甲'),('待归属.txt','小丙')]:
-   row=page.locator('[data-upload-id]').filter(has_text=name);row.locator('[data-upload-field=author]').fill(author);row.locator('[data-upload-field=platform]').select_option('其他');row.locator('[data-upload-field=kind]').select_option('图文');row.locator('[data-upload-field=stage]').select_option('初稿')
-  page.locator('[data-action=wb-upload-confirm-all]').click();page.wait_for_function('probe.state().tasks.length===3');assert page.locator('[data-upload-field]').count()==0
-  page.locator('[data-action=wb-upload-cancel]').click();page.wait_for_function('!document.querySelectorAll("[data-upload-id]").length')
-  passed('集中确认两份稿件仅保存一次，取消失败上传移除待办原件')
-  upload('【小乙】小红书图文大纲.txt','无版本号的新版');page.wait_for_selector('[data-action=wb-upload-assign]');assert len(page.evaluate('probe.state().tasks'))==3
-  assert '第 2 轮' in page.locator('[data-upload-id]').inner_text();page.locator('[data-action=wb-upload-assign]').click();page.wait_for_function('probe.state().tasks.length===4')
-  t=page.evaluate("probe.state().tasks.find(t=>t.author==='小乙'&&t.flow.round===2)");assert t
-  old=page.evaluate("probe.state().tasks.find(t=>t.author==='小乙'&&t.flow.round===1)")
-  page.evaluate("""async id=>{const t=structuredClone(probe.state().tasks.find(t=>t.id===id));t.ai={at:'历史结果',changes:[],warnings:[],assurance:{complete:true,projectRevision:'v1'}};t.flow.state='passed';t.flow.passedAt='历史通过';await probe.persist([['tasks',t]]);probe.setTask(id)}""",t['id'])
-  before=page.evaluate("id=>JSON.stringify(probe.state().tasks.find(t=>t.id===id))",t['id'])
-  page.evaluate("async()=>probe.loadFile(new File(['第三轮原稿'],'【小乙】小红书图文大纲.txt',{type:'text/plain'}),true)")
-  page.wait_for_function('probe.state().tasks.length===5')
-  assert page.evaluate("id=>JSON.stringify(probe.state().tasks.find(t=>t.id===id))",t['id'])==before
-  assert page.evaluate("probe.state().tasks.filter(t=>t.author==='小乙').map(t=>t.flow.round).sort()")==[1,2,3]
-  assert page.evaluate("probe.state().tasks.find(t=>t.author==='小乙'&&t.flow.round===3).ai") is None
-  passed('无版号旧内容显式确认续轮；收到新版统一保存新记录，旧审核及品牌通过保持原样')
-  # Delay parsing, switch activity, and restore the queued original after refresh.
-  page.evaluate("""()=>{const f=new File(['迟到正文'],'【小丁】小红书图文大纲.txt');f.text=()=>new Promise(r=>window.releaseFile=()=>r('迟到正文'));window.uploading=probe.workbench.upload([f])}""")
-  page.wait_for_function('!!window.releaseFile');page.locator('[aria-label=当前活动]').select_option('b');page.evaluate('releaseFile()');page.evaluate('uploading');assert len(page.evaluate('probe.state().tasks'))==5
-  page.locator('[aria-label=当前活动]').select_option('a');page.wait_for_selector('[data-action=wb-upload-assign]');assert '活动已切换' in page.locator('[data-upload-id]').inner_text()
-  page.locator('[data-action=wb-upload-assign]').click();page.wait_for_function('probe.state().tasks.length===6');assert page.evaluate("probe.state().tasks.find(t=>t.author==='小丁').activityId")=='a'
-  passed('解析中切活动保留原归属并等待确认，迟到文件不进入错误活动')
-  # Inject a transaction abort to ensure original and form remain retryable.
-  upload('失败重试.txt');page.wait_for_selector('[data-action=wb-upload-assign]')
-  row=page.locator('[data-upload-id]');row.locator('[data-upload-field=author]').fill('小戊');row.locator('[data-upload-field=platform]').select_option('抖音');row.locator('[data-upload-field=kind]').select_option('视频');row.locator('[data-upload-field=stage]').select_option('脚本')
-  page.evaluate("""()=>{window.nativePut=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(v,...a){if(this.name==='tasks'&&v.author==='小戊'){throw Error('合成落库失败')}return nativePut.call(this,v,...a)}}""")
-  page.locator('[data-action=wb-upload-assign]').click();page.wait_for_function("document.querySelector('[data-upload-id]').textContent.includes('合成落库失败')")
-  assert len(page.evaluate('probe.state().tasks'))==6
-  page.evaluate('()=>{IDBObjectStore.prototype.put=nativePut}');page.locator('[data-action=wb-upload-assign]').click();page.wait_for_function('probe.state().tasks.length===7')
-  page.reload();page.wait_for_function('!!window.probe');assert len(page.evaluate('probe.state().tasks'))==7;assert page.locator('[data-upload-id]').count()==0
-  passed('稿件与上传完成标记同事务提交，失败保留原件和输入，重试不重复落库')
-  upload('跨页待确认.txt');page.wait_for_selector('[data-action=wb-upload-assign]')
-  row=page.locator('[data-upload-id]');row.locator('[data-upload-field=author]').fill('小己');row.locator('[data-upload-field=platform]').select_option('其他');row.locator('[data-upload-field=kind]').select_option('图文');row.locator('[data-upload-field=stage]').select_option('初稿')
-  # Persist the final field before opening the second tab.
-  page.evaluate("async()=>{await probe.workbench.upload([])}")
-  second=context.new_page();second.on('pageerror',lambda e:errors.append(str(e)));second.goto(origin);second.wait_for_function('!!window.probe');second.wait_for_selector('[data-action=wb-upload-assign]')
-  page.locator('[data-action=wb-upload-assign]').click();page.wait_for_function('probe.state().tasks.length===8')
-  second.locator('[data-upload-field=title]').fill('迟到标题');second.locator('[data-action=wb-upload-assign]').click();second.wait_for_function("document.querySelector('[data-upload-id]').textContent.includes('另一页面')")
-  second.reload();second.wait_for_function('!!window.probe');assert len(second.evaluate('probe.state().tasks'))==8;assert second.locator('[data-upload-id]').count()==0;second.close()
-  passed('双标签页恢复同一上传，迟到输入和重复确认不能再次创建稿件')
+  page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(OUT/'assignment-narrow.png'),full_page=True)
+  assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
+  passed('混合投稿无归属表单、三份进入待审，坏件单独重试；刷新保留未知字段')
+  ppt=page.evaluate("""async()=>{const {readSlideCells,writeSlideDraft}=await import('./pptx-draft.js'),z=new JSZip(),path='ppt/slides/slide1.xml';z.file(path,'<a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:rPr b="1"/><a:t>容量5</a:t></a:r><a:r><a:t>00毫升</a:t></a:r></a:p>');z.file('ppt/media/a.png','untouched');const buf=await z.generateAsync({type:'arraybuffer'}),cells=await readSlideCells(buf);cells[0].current='容量300毫升';const bytes=await(await writeSlideDraft(buf,cells)).arrayBuffer(),out=await JSZip.loadAsync(bytes);return [(await readSlideCells(bytes))[0].current,await out.file(path).async('string'),await out.file('ppt/media/a.png').async('string')]}""")
+  assert ppt[0]=='容量300毫升' and 'FF0000' in ppt[1] and ppt[2]=='untouched'
+  passed('PPTX 两段不同格式的文字回写重读、变化标红，内嵌附件字节不变')
   assert not errors,errors;browser.close()
 except Exception:
  errors.append(traceback.format_exc());print(errors[-1],flush=True)

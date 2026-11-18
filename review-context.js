@@ -23,6 +23,14 @@ export function contextSummary(all,entry){return Object.fromEntries(sections.map
  return [s,{total:all[s].length,required:required.includes(s),read,complete:read===all[s].length,nextCursor}];
 }));}
 export function createContextDelivery(){return {readThrough:{},cursors:{}};}
+// Send whole small sections in the brief. Mark only data actually present in its response.
+export function inlineContext(entry,all,budget=8000){
+ const result={};
+ for(const section of required){const rows=all[section];if(!rows.length||entry.contextDelivery?.readThrough?.[section])continue;
+  const size=JSON.stringify(rows).length+section.length+6;if(size>budget)continue;
+  result[section]=rows;budget-=size;(entry.contextDelivery??=createContextDelivery()).readThrough[section]=rows.length;
+ }return result;
+}
 export function contextPage(entry,all,section,cursor){
  if(!sections.includes(section))throw reviewError('INVALID_CONTEXT_SECTION','未知资料分区，请使用 brief.context 列出的名称。');
  const delivery=entry.contextDelivery||(entry.contextDelivery=createContextDelivery());let start=0;

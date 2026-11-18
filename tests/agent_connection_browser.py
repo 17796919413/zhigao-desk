@@ -246,6 +246,25 @@ def multiple_tabs(page):
     other.close()
 
 
+def independent_browser_handoff(page):
+    assert not client.call('zhigao_status').get('isError')
+    page.wait_for_function('a.agent.verification?.at')
+    other=page.context.browser.new_context()
+    other.route('http://127.0.0.1:47821/**', lambda r: r.continue_(url=backend+r.request.url.split('47821',1)[1]))
+    try:
+        tab=other.new_page();tab.goto(origin);tab.evaluate("async()=>window.a=await import('/agent.js')")
+        tab.wait_for_function("a.agent.state==='other-tab'")
+        tab.get_by_role('button',name='连接与授权',exact=True).click()
+        tab.get_by_role('button',name='在此浏览器接入',exact=True).click()
+        tab.wait_for_function('a.agent.verification?.at');page.wait_for_function("a.agent.state==='other-tab'")
+        client.page=tab
+        result=json.loads(client.call('zhigao_status')['content'][0]['text'])
+        assert result['invitationPage']==tab.evaluate("async()=>(await import('/connection-status.js')).invitationPage")
+        tab.screenshot(path=str(OUT/'handoff.png'))
+    finally:
+        other.close();client.page=page
+
+
 def invitation_and_verified_project(page):
     # Initialized MCP/heartbeats alone must not count as successful project access.
     assert '等待接入' in page.locator('#agent-chip').inner_text()
@@ -552,7 +571,7 @@ def invitation_recovery_matrix(page):
 
 CASES = [idle_surviving_client, automatic_feishu_status, feishu_stale_response_and_wake, invitation_recovery_matrix,invitation_and_verified_project, activity_toolbar_removed, verification_project_scope, verification_explicit_disconnect, verification_network_recovery,
          wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
-         stopped_poll_cannot_reconnect, restored_page_session, multiple_tabs,
+         stopped_poll_cannot_reconnect, restored_page_session, multiple_tabs, independent_browser_handoff,
          outage_and_recovery, suspended_transport_and_resume, verification_client_replacement, stale_verification_ack, verification_hub_replacement, verification_idle_refresh, hub_exit_and_client_takeover]
 if os.environ.get('ZHIGAO_SESSION_FIXTURES_DIR'):
     CASES.insert(0,application_session_matrix)

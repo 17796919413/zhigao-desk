@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {autoMap,rowKey,rowIdentity,rowInActivity,buildPlan} from '../feishu.js';
-import {activityRowMatch} from '../creator-match.js';
+import {activityRowMatch,matchDraftRow} from '../creator-match.js';
 import {createSyncFixture} from './feishu_sync_fixture.mjs';
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'zhigao-activity-sync-')),fixture=createSyncFixture(home),checks=[];
 const p={id:'p',date:'basis',activities:[{id:'a',name:'秋季活动'},{id:'b',name:'冬季活动'}]};
@@ -13,6 +13,8 @@ const write=(row,value='AI已审 · 1处修改')=>({status:'update',field:'outli
 const send=w=>fixture.invoke({action:'write',url:'https://example.feishu.cn/sheets/book',sheetId:'s',writes:[w]});
 const ok=s=>{checks.push(s);console.log('PASS '+s);};
 try{
+ const byFile=matchDraftRow({filename:'同名达人-同款内容-小红书图文大纲.xlsx',cells:[]},{...a,author:'',title:'同名达人-同款内容-小红书图文大纲'},[a,b],[sheet()],p);assert.equal(byFile.hits.length,1);assert.equal(byFile.hits[0].r[sheet().map.author],'同名达人');
+ assert.equal(matchDraftRow({filename:'无署名.xlsx',cells:[]},{...a,author:''},[a],[sheet()],p).hits.length,0);ok('点击同步才用文件名比对在线达人与内容，缺少身份不写');
  assert.equal(autoMap(['活动反馈','项目名称','活动名称']).activity,2);assert.equal(autoMap(['活动反馈','项目名称']).activity,-1);
  for(const [it,row] of [[a,0],[b,1]]){const result=activityRowMatch(it,[a,b],[sheet()],p);assert.equal(result.hits[0].row,row);assert.equal(result.conflicts.length,0);assert.equal(result.issues.length,0);}assert.notEqual(rowKey(sheet(),0),rowKey(sheet(),1));ok('明确活动列区分同达人同标题；活动反馈等表头不误识别');
  assert.equal(activityRowMatch({...a,title:'另一篇内容'},[a],[sheet()],p).hits.length,0);

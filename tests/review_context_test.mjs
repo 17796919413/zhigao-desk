@@ -185,4 +185,7 @@ await test('待转换稿件保留原批次，只有字节校验通过的自动�
   const current=await f.service.zhigao_get_review_batch({batchId:b.id});assert.equal(current.entries[0].status,tamper?'skipped':'queued');
  }
 });
+await test('短稿首次领取附全部短分区，不再逐区往返；长分区仍需读取',async()=>{
+ for(const big of [false,true]){const f=fixture();if(big)f.p.library[0].text+='很长的资料'.repeat(5000);const b=await f.service.zhigao_get_review_brief({docId:'d',compact:true});assert(b.inlineContext.blocks.some(r=>r.text===f.t.cells[0].current));assert.equal(b.context.sources.complete,!big);if(!big){assert(Object.values(b.context).every(v=>!v.required||v.complete));assert(b.inlineContext.sources.length);console.log('短稿随 brief 返回：'+Object.keys(b.inlineContext).join(', '));}}
+});
 console.log(JSON.stringify({total:results.length,checks:results},null,2));

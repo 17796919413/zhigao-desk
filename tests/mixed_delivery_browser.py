@@ -93,7 +93,8 @@ try:
   media_doc=next(t for t in tasks if t['fmt']=='image')
   page.evaluate("()=>{navigator.clipboard.writeText=async text=>window.copiedOpinion=text}")
   page.locator(f'[data-doc-id="{media_doc["id"]}"] [data-action=wb-detail]').click();page.locator(f'[data-doc-id="{media_doc["id"]}"] [data-action=wb-copy-opinions]').click()
-  report=page.evaluate("""async id=>{const t=probe.state().tasks.find(t=>t.id===id),read=async path=>{let dir=await navigator.storage.getDirectory();const parts=path.split('/');for(const p of parts.slice(0,-1))dir=await dir.getDirectoryHandle(p);return (await (await dir.getFileHandle(parts.at(-1))).getFile()).text()};return {copied:copiedOpinion,output:await read(t.ai.archive.output),notes:await read(t.ai.archive.notes)}}""",media_doc['id'])
+  report=page.evaluate("""async id=>{const t=probe.state().tasks.find(t=>t.id===id),read=async path=>{let dir=await navigator.storage.getDirectory();const parts=path.split('/');for(const p of parts.slice(0,-1))dir=await dir.getDirectoryHandle(p);return (await (await dir.getFileHandle(parts.at(-1))).getFile()).text()};return {copied:copiedOpinion,output:await read(t.ai.saved.path),draft:t.ai.archive.output||null,paths:t.ai.archive.paths,notes:await read(t.ai.archive.notes)}}""",media_doc['id'])
+  assert report['draft'] is None and len(report['paths'])==2,report['paths']
   assert report['copied']=='图片原件：画面为纯蓝色，未出现产品主体。';assert '画面为纯蓝色，未出现产品主体。' in report['output'] and '画面为纯蓝色，未出现产品主体。' in report['notes'];assert '未发现需要修改' not in report['notes']
   (OUT/'media-opinion-report.html').write_text(report['output'],encoding='utf-8')
   report_page=context.new_page();report_page.set_content(report['output']);report_page.screenshot(path=str(OUT/'media-opinion-report.png'),full_page=True);report_page.close()

@@ -21,6 +21,7 @@ export const agent={state:'off',clients:[],log:[],version:'',verification:null};
 let reviewService=null,videoProcessor=null,libraryProcessor=null,taskBridge=null;
 let ctx=null,abort=null,running=false,lockAbort=null,activeCall=null,maintaining=false,pollAbort=null,retryAbort=null,wakeConnection=null,pageHidden=false;
 let pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
+let handoffRequested=false;
 const preference=()=>{try{return localStorage.getItem(KEY);}catch{return null;}};
 export const agentWanted=()=>preference()==='on';
 const remember=on=>{try{localStorage.setItem(KEY,on?'on':'off');}catch{}};
@@ -128,7 +129,8 @@ async function loop(signal,connection){
  while(!signal.aborted){
   const request=++connection.sequence,id=pageId;let controller;
    try{pollAbort=new AbortController();controller=pollAbort;const onAbort=()=>controller.abort();signal.addEventListener('abort',onAbort,{once:true});const timer=setTimeout(onAbort,35000);let r;
-    try{r=await post('/page/poll',{pageId,projectId:S().settings.selected,title:document.title,hello,version:WEB_VERSION,tools:Object.keys(tools)},controller.signal);}finally{clearTimeout(timer);signal.removeEventListener('abort',onAbort);if(pollAbort===controller)pollAbort=null;}
+    const takeOver=handoffRequested;handoffRequested=false;
+    try{r=await post('/page/poll',{pageId,projectId:S().settings.selected,title:document.title,hello,takeOver,version:WEB_VERSION,tools:Object.keys(tools)},controller.signal);}finally{clearTimeout(timer);signal.removeEventListener('abort',onAbort);if(pollAbort===controller)pollAbort=null;}
    if(signal.aborted)break;
    hello=false;wait=3000;
    connection.success(r,id,request);
@@ -163,6 +165,7 @@ async function run(){
    if(signal.aborted||id!==pageId||request<this.settled)return;
    this.settled=request;
    this.failedAt??=performance.now();
+   if(agent.state==='online'&&agent.verification&&navigator.onLine!==false&&performance.now()-this.failedAt<15000)return;
    set(performance.now()-this.failedAt<20000?'reconnecting':'offline',{clients:[],error:{code:error.code||error.name||'NETWORK_ERROR',status:error.status||null}});
   }
  };
@@ -188,7 +191,8 @@ async function discoverAgent(){
  discovering=true;try{const r=await fetch(HUB+'/health',{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(2500)}),h=await r.json();if(h.app==='zhigao'&&preference()!=='off')startAgent();}catch{}finally{discovering=false;}
 }
 export function initAgent(c){ctx=c;taskBridge=createTaskBridge(c,tools);videoProcessor=createVideoProcessor(c);libraryProcessor=createLibraryProcessor(c);reviewService=createReviewService({...c,onReviewProgress:reviewProgress,getLibraryVideoAnalysis:t=>libraryProcessor.analysis(t),readLibraryVideoAsset:(t,id)=>libraryProcessor.readAsset(t,id),getVideoAnalysis:t=>videoProcessor.analysis(t),readPreparedVideoAsset:(t,id)=>videoProcessor.readAsset(t,id)});const url=new URL(location.href),requested=url.searchParams.get('connect')==='1';if(requested){url.searchParams.delete('connect');history.replaceState(history.state,'',url);}if(requested||agentWanted())startAgent();else discoverAgent();setInterval(discoverAgent,5000);const wake=()=>{wakeConnection?.();discoverAgent();};document.addEventListener('visibilitychange',()=>{if(!document.hidden)wake();});document.addEventListener('resume',wake);window.addEventListener('online',wake);window.addEventListener('pageshow',wake);}
-export async function startAgent(){
+export async function startAgent({takeOver=false}={}){
+ if(takeOver)handoffRequested=true;
  if(pageHidden)return;
  remember(true);if(running){wakeConnection?.();return;}pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);running=true;set('connecting');
  if(!navigator.locks)return run();
