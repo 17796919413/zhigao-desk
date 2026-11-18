@@ -130,6 +130,15 @@ class RuntimeTests(unittest.TestCase):
         self.write()
         return p
 
+    def test_installed_client_exit_keeps_table_transport(self):
+        self.write()
+        owner = self.start(name='short-lived-client')
+        h = self.wait_health(lambda h:'short-lived-client' in h['clients'])
+        self.assertNotEqual(owner.pid, h['pid']); self.extra_pids.add(h['pid'])
+        owner.kill();owner.wait(timeout=5)
+        self.assertEqual(self.health()['pid'],h['pid'])
+        self.assertEqual(self.request('/page/feishu', {'action':'status'}, origin=ORIGIN)[1]['data']['state'],'ready')
+
     def test_idle_upgrade_and_feishu_status(self):
         old = self.old_hub()
         self.start(name='new-client')

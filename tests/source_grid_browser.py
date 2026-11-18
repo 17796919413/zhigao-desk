@@ -28,12 +28,28 @@ try:
   browser=pw.chromium.launch(channel='msedge',headless=True);context=browser.new_context(viewport={'width':1440,'height':1000})
   seed={'selected':'p','projects':[{'id':'p','name':'合成验收品牌','status':'active','rules':[],'library':[],'feishu':{'reviewTableVersion':2,'sheets':[],'refined':{'url':url,'sheet':sid}}}]}
   context.add_init_script("if(!localStorage.getItem('seed')){localStorage.setItem('zhigao-settings-v1',"+json.dumps(json.dumps(seed,ensure_ascii=False))+ ");localStorage.setItem('seed','1');localStorage.setItem('zhigao-agent-v1','off');}")
+  first_read_down=not live
   def route(r):
+   global first_read_down
    if r.request.url.endswith('/page/feishu'):
+    if first_read_down and r.request.post_data_json['action']=='gridRead':
+     first_read_down=False;r.abort();return
     code,body=post('/grid',r.request.post_data_json);r.fulfill(status=code,body=body,content_type='application/json')
+   elif r.request.url.endswith('/page/poll'):
+    # A reachable connector without a live AI is enough for a read-only table.
+    r.fulfill(json={'clients':[],'calls':[],'version':'1.15.2'})
    else:r.abort()
   context.route('http://127.0.0.1:47821/**',route)
-  page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)));page.goto(origin);page.wait_for_function('!!window.probe && !!probe.db()');page.locator('[data-page=feishu]').first.click();page.wait_for_selector('.source-grid',timeout=90000)
+  page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)));page.goto(origin);page.wait_for_function('!!window.probe && !!probe.db()');page.locator('[data-page=feishu]').first.click()
+  if not live:
+   page.wait_for_function("document.querySelector('[data-grid-status]').textContent.includes('本地网络')")
+   start_writes=control()['writes'];page.wait_for_timeout(1100)
+   page.evaluate("async()=>{const a=await import('/agent.js');void a.startAgent()}")
+   page.wait_for_selector('.source-grid');page.evaluate("async()=>(await import('/agent.js')).stopAgent()")
+   assert control()['writes']==start_writes
+   page.screenshot(path=str(OUT/'grid-read-recovered.png'))
+   passed('已有审核表首读断线，连接恢复后不点刷新即显示子表；没有写操作')
+  page.wait_for_selector('.source-grid',timeout=90000)
   assert page.locator('.source-grid thead th').count()==9
   assert page.locator('[data-grid-cell=A1]').get_attribute('colspan')=='8'
   assert page.locator('.source-grid tbody tr').count()==40

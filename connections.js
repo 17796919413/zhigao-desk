@@ -16,7 +16,7 @@ export function feishuIssue(code) {
     FEISHU_AUTH: ['auth', '待登录飞书', '登录飞书账号，完成表格与云空间授权。'],
     FEISHU_SCOPE: ['scope', '待补充授权', '补充表格与云空间权限后重试。'],
     FEISHU_ACCESS: ['access', '表格访问受限', '用已登录的账号打开这张表，向表格所有者申请相应访问权限。'],
-    CONNECTOR_OFFLINE: ['connector', '连接器未运行', '启动已接入知稿的 AI 客户端，再检查连接。'],
+    CONNECTOR_OFFLINE: ['connector', '网页未连到连接器', '检查客户端是否已启动，以及此网页是否获准访问本地网络。'],
     CONNECTOR_ORIGIN: ['origin', '当前网址未接入', '请从正式工作台打开；本地部署需配置连接器的网页来源。'],
     CONNECTOR_UPDATE: ['update', '连接器待更新', '点击上方“检查更新”，核对本机连接器版本。'],
   })[code] || ['error', '检查未完成', '确认网络可用后，重新检查。'];
@@ -84,7 +84,15 @@ export function createConnections(ctx) {
     const host = document.querySelector('#connections-body');
     if (!host) return;
     const focused = document.activeElement, selection = getSelection();
-    if (focused?.tagName === 'TEXTAREA' && host.contains(focused) || selection && !selection.isCollapsed && host.contains(selection.anchorNode)) return;
+    if (focused?.tagName === 'TEXTAREA' && host.contains(focused) || selection && !selection.isCollapsed && host.contains(selection.anchorNode)) {
+      // Keep the selected instruction intact, but do not freeze unrelated status rows.
+      const fresh=document.createElement('template');fresh.innerHTML=body();
+      for(const selector of ['.connect-update',...['ai','feishu','folder'].map(k=>`[data-connection="${k}"] .connect-row-head`)]){
+        const old=host.querySelector(selector),next=fresh.content.querySelector(selector);
+        if(old&&next&&!old.contains(focused)&&!old.contains(selection?.anchorNode)&&old.innerHTML!==next.innerHTML)old.replaceWith(next);
+      }
+      return;
+    }
     const key = focused?.dataset?.key, action = focused?.dataset?.action, section = focused?.dataset?.section;
     const opened = [...host.querySelectorAll('details')].map(d => d.getClientRects().length ? d.open : null), scroll = host.parentElement.scrollTop;
     host.innerHTML = body();
@@ -147,6 +155,7 @@ export function createConnections(ctx) {
     if(action==='connect-update-refresh')location.reload();
     if(action==='connect-copy-invitation'){
       const value=connectionPrompt(location.href,ctx.project());
+      if(!['online','waiting'].includes(ctx.agent.state))void ctx.startAgent();
       try{await navigator.clipboard.writeText(value);ctx.toast('已复制，粘贴到你的 AI 客户端并发送。');}
       catch{const field=document.getElementById('connect-invitation');field.closest('details').open=true;field.value=value;field.focus();field.select();ctx.toast('请复制已选中的接入指令，粘贴到你的 AI 客户端。');}
     }
@@ -162,5 +171,12 @@ export function createConnections(ctx) {
     if (!status || !['ready','missing','config','auth','scope','access','error'].includes(status.state)) return;
     feishu = {state:status.state, ...(status.code ? {code:status.code} : {})}; refresh();
   }
-  return {open, refresh, handle, showIssue, updateFeishu};
+  let reachable=false;
+  function connectionChanged(){
+    const now=['online','waiting'].includes(ctx.agent.state),recovered=now&&!reachable;reachable=now;
+    if(recovered&&['offline','waking'].includes(update?.state)&&!updateBusy)void checkVersion();
+    if(recovered&&feishu.state==='connector'&&!checking)void check();
+    refresh();
+  }
+  return {open, refresh, connectionChanged, handle, showIssue, updateFeishu};
 }

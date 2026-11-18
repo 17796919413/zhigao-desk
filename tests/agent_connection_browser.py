@@ -373,7 +373,28 @@ def verification_idle_refresh(page):
     page.screenshot(path=str(OUT/'idle-refresh-verified.png'),full_page=True)
 
 
-CASES = [invitation_and_verified_project, activity_toolbar_removed, verification_project_scope, verification_explicit_disconnect, verification_network_recovery,
+def invitation_recovery_matrix(page):
+    global client
+    for name in ['codex-mcp-client','Claude Code','WorkBuddy','DeepSeek Harness']:
+        page.evaluate('a.stopAgent()');client.close()
+        page.reload();page.wait_for_selector('#agent-chip');page.evaluate("async()=>window.a=await import('/agent.js')")
+        assert page.evaluate('a.agent.state')=='off'
+        page.get_by_role('button',name='连接与授权',exact=True).click()
+        page.evaluate("()=>{navigator.clipboard.writeText=async()=>{throw Error('test manual copy')}}")
+        page.get_by_role('button',name='复制网址和接入指令',exact=True).click()
+        invitation=page.locator('#connect-invitation').input_value()
+        assert 'AI 可用' not in page.locator('[data-status=ai]').inner_text()
+        client=MCP(script,env,log,page,name=name);online(page)
+        result=client.call('zhigao_status');assert not result.get('isError'),result
+        payload=json.loads(result['content'][0]['text']);assert payload['invitationPage'] in invitation
+        page.wait_for_function("document.querySelector('[data-status=ai]').textContent==='AI 可用'")
+        assert name in page.locator('[data-connection=ai] .connect-copy').inner_text()
+        assert page.evaluate("document.activeElement.id==='connect-invitation' && document.activeElement.selectionEnd>0")
+    page.screenshot(path=str(OUT/'invitation-recovered.png'))
+    client.close();client=MCP(script,env,log,page)
+
+
+CASES = [invitation_recovery_matrix,invitation_and_verified_project, activity_toolbar_removed, verification_project_scope, verification_explicit_disconnect, verification_network_recovery,
          wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
          stopped_poll_cannot_reconnect, restored_page_session, multiple_tabs,
          outage_and_recovery, suspended_transport_and_resume, verification_client_replacement, verification_hub_replacement, verification_idle_refresh, hub_exit_and_client_takeover]

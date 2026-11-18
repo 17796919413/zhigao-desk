@@ -6,7 +6,7 @@ import {createGridAccess} from './grid-access.js';
 // Drafts contain user input and the observed row, never credentials or sessions.
 export function createGridEditor({request:rawRequest,storage=localStorage,onSaved=()=>{},prepareAccess,currentActivity=()=> 'legacy',currentProject=null}){
  let root=null,key='',projectId='',url='',data=null,sheetId='',startRow=1,loading=false,error='',localError='',status='',editing='',generation=0,timer=null,flight=null,paintedView='',editingPosition='',resizeObserver=null;
- let imageStates={};
+ let imageStates={},retryReadAt=0;
  const draftKey=(sid,address)=>sid+'!'+address;
  const read=()=>{const v=JSON.parse(storage.getItem(key)||'{}');if(!v||Array.isArray(v)||typeof v!=='object')throw Error('待保存内容无法读取。');return v;};
  const write=v=>{storage.setItem(key,JSON.stringify(v));};
@@ -88,7 +88,8 @@ export function createGridEditor({request:rawRequest,storage=localStorage,onSave
    value.floatingError=true;paintFloatingNotice();
   }
  }
- async function refresh(){const g=++generation,u=url;loading=true;error='';paint();try{const value=await request('gridRead',{url:u,sheetId,startRow,pageSize:40});if(g!==generation||u!==url)return;data=value;imageStates={};sheetId=value.sheetId;status='';}catch(e){if(g===generation)error=e.message;}finally{if(g===generation){loading=false;paint();if(data&&!error){const value=data;loadImages(value,g).then(()=>loadFloating(value,g)).catch(()=>{});}}}}
+ async function refresh(){const g=++generation,u=url;loading=true;retryReadAt=0;error='';paint();try{const value=await request('gridRead',{url:u,sheetId,startRow,pageSize:40});if(g!==generation||u!==url)return;data=value;imageStates={};sheetId=value.sheetId;status='';}catch(e){if(g===generation){error=e.message;if(!data&&e.code==='CONNECTOR_OFFLINE')retryReadAt=Date.now()+1000;}}finally{if(g===generation){loading=false;paint();if(data&&!error){const value=data;loadImages(value,g).then(()=>loadFloating(value,g)).catch(()=>{});}}}}
+ function recoverRead(){if(retryReadAt&&Date.now()>=retryReadAt&&!loading&&!data&&url&&root?.isConnected&&!editing&&!flight)void refresh();}
  function record(el){try{const address=el.dataset.gridInput,dk=draftKey(data.sheetId,address),drafts=read(),cell=gridCells(data).get(address)||{},old=drafts[dk],base=old?.blocked&&!old.request?null:old;if(el.value===editText(cell)&&!old?.request)delete drafts[dk];else drafts[dk]={...old,sheetId:data.sheetId,address,text:el.value,base:base?.base||cell,row:base?.row||rowContext(data,address),revision:base?.revision??data.revision,rows:data.meta.row_count,cols:data.meta.column_count,version:(old?.version||0)+1,error:'',blocked:false,attempts:0,retryAt:0};write(drafts);error='';localError='';status=Object.keys(drafts).length?'正在保存到飞书…':'已保存';root.querySelector('[data-grid-status]').textContent=status;}catch(e){localError='输入尚未保存：'+e.message;root.querySelector('[data-grid-status]').textContent=localError;}}
  function startEdit(address,position){if(structure.blocked())return;if(editing&&(editing!==address||editingPosition!==position)){finish();if(localError)return;}const cell=gridCells(data).get(address);if(!cell||!cellEditable(cell))return;editing=address;editingPosition=position;paint();const el=root.querySelector('[data-grid-input]');el?.focus({preventScroll:true});el?.select();}
  function finish(){if(!editing)return;const el=root.querySelector('[data-grid-input]');if(el)record(el);if(localError)return;editing='';editingPosition='';paint();clearTimeout(timer);timer=setTimeout(()=>flush(),200);}
@@ -141,5 +142,5 @@ export function createGridEditor({request:rawRequest,storage=localStorage,onSave
      if(!loading&&latest?.url===url&&Number.isInteger(latest.revision)&&Number.isInteger(data?.revision)&&latest.revision>data.revision)refresh();
      return;
     }root=placeholder;bind();paint();if(url)refresh().then(async()=>{if(!access.restore()&&!error){await structure.resume();await retry();}}).catch(e=>{error=e.message;paint();});
-  },refresh,flush,accessContext:access.pending,resumeAccess:access.resume,html:()=>'<section id="source-grid-panel" class="panel review-table-panel"></section>'};
+  },refresh,recoverRead,flush,accessContext:access.pending,resumeAccess:access.resume,html:()=>'<section id="source-grid-panel" class="panel review-table-panel"></section>'};
 }

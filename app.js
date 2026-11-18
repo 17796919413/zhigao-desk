@@ -176,7 +176,7 @@ const CONNECTOR_URL=new URL('./zhigao-connector.mjs',location.href).href;
 const agentInstallCmd=()=>`$f="$env:USERPROFILE\\zhigao-connector.mjs"; irm "${CONNECTOR_URL}" -OutFile $f; node $f install`;
 function agentChip(){const [label,tone]=connectionLabel(agent,project().id);return `<button class="agent-chip ${tone}" id="agent-chip" data-action="agent" aria-label="连接与授权" title="${esc(label)}"><i class="status-dot"></i>连接与授权<span class="agent-state-label">${esc(label)}</span></button>`;}
 function agentModal(){connections.open();}
-function agentChanged(){const c=$('#agent-chip');if(c)c.outerHTML=agentChip();connections.refresh();}
+function agentChanged(){const c=$('#agent-chip');if(c)c.outerHTML=agentChip();connections.connectionChanged();if(page==='feishu'&&['waiting','online'].includes(agent.state))sourceGrid.recoverRead();}
 let imagePreview={buffer:null,url:null};
 function imageReview(){if(imagePreview.buffer!==task.buffer){if(imagePreview.url)URL.revokeObjectURL(imagePreview.url);imagePreview={buffer:task.buffer,url:URL.createObjectURL(new Blob([task.buffer],{type:task.mime||'image/png'}))};}return `${reviewHead('图片原稿',btn('ai-draft-save','导出审核报告','small',task.ai?'':'disabled'))}${metaStrip()}${flowPanel()}${fbPanel()}<section class="panel"><img class="review-original-image" src="${imagePreview.url}" alt="${esc(task.filename)}">${aiPanel()}</section>`;}
 function render(){if(!settings.projects.length){shell(`<div class="empty"><h1>还没有品牌项目</h1><p>创建品牌项目后，添加专属资料和稿件。</p>${btn('new-project','新建品牌项目','primary')}</div>`);return;}if(page==='brand')page='rules';if(page==='review'&&!task)page='home';if(page==='item'&&!items.includes(item))page='history';const content=(page==='home'?home():page==='rules'?rulesPage():page==='history'?historyPage():page==='feishu'?feishuPage():page==='brand'?brandPage():page==='item'?itemPage():task.fmt==='pdf'?pdfReview():task.fmt==='video'?videoReview():task.fmt==='image'?imageReview():review());shell(content);bindDrop();workbench.mount();if(page==='feishu')sourceGrid.mount(project());if(page==='review'){mountPdf();mountVideo();}}
@@ -802,7 +802,7 @@ const workbench=createWorkbench({prepareAccess:args=>taskPanel.open(args),showCo
 });
 
 const taskPanel=createTaskPanel({esc,btn,modal,toast,connect:async()=>{if(!['online','waiting'].includes(agent.state))startAgent().catch(e=>toast(e.message));for(let i=0;i<100&&!['online','waiting'].includes(agent.state);i++)await new Promise(r=>setTimeout(r,100));if(!['online','waiting'].includes(agent.state))throw Error('工作台尚未连接，请在连接设置恢复后重试。');}});
-const connections=createConnections({esc,btn,modal,toast,agent,project,prepareTask:args=>taskPanel.open(args),
+const connections=createConnections({esc,btn,modal,toast,agent,project,startAgent,prepareTask:args=>taskPanel.open(args),
  installCommand:agentInstallCmd,macCommand:()=>`curl -o ~/zhigao-connector.mjs '${CONNECTOR_URL.replaceAll("'", "'\\''")}' && node ~/zhigao-connector.mjs install`,
  folder:id=>folders.get(id),folderState:id=>folderStates.get(id),
  folderAction:(action,b)=>actions[action](b),checkFeishu:()=>feishuLocal('status')});
