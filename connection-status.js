@@ -15,5 +15,5 @@ export function connectionPrompt(href, project) {
   const url=new URL('./',href);
   // Do not copy transient query parameters, fragments or URL credentials.
   url.username='';url.password='';
-  return `帮我连接这个知稿工作台：${url.href}\n当前品牌：${JSON.stringify(project.name||'')}；项目 ID：${JSON.stringify(project.id||'')}。\n请读取该网址下的 AGENT_SETUP.md 和 setup-manifest.json，复用已有配置，只接入我正在使用的 AI 客户端。保留我复制指令的网页，不另开标签页代替它验证。真实调用 zhigao_status({project:${JSON.stringify(project.id||'')}})，确认返回的 currentProjectId 与项目一致、invitationPage 等于 ${invitationPage}；字段缺失、不一致或超时，都不要报告本页已接通。若网页已刷新，请从当前页重新复制指令。再调用 zhigao_setup_status，分别报告 AI、飞书账号、审核表和归档状态；未实际读取子表不要报告表格已显示。需要本人授权时给出准确入口。`;
+  return `帮我连接知稿：${url.href}（${JSON.stringify(project.name||'')}）。\n使用当前 AI 的知稿工具，在原网页调用 zhigao_status({project:${JSON.stringify(project.id||'')},invitationPage:"${invitationPage}"})。核对返回的项目 ID 和页面编号；缺失、不一致或超时不能报成功。不另开页面。仅当工具不可用时，按该网址的 AGENT_SETUP.md 和 setup-manifest.json 复用或配置当前客户端。成功只回复「已连接知稿，可以开始审稿。」遇阻只说原因和一个必要动作。不检查飞书或归档。`;
 }

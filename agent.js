@@ -25,7 +25,17 @@ let handoffRequested=false;
 const preference=()=>{try{return localStorage.getItem(KEY);}catch{return null;}};
 export const agentWanted=()=>preference()==='on';
 const remember=on=>{try{localStorage.setItem(KEY,on?'on':'off');}catch{}};
-const set=(state,extra={})=>{Object.assign(agent,{state},extra);if(state!=='online'||!agent.clients.includes(agent.verification?.client))agent.verification=null;ctx?.changed();};
+const set=(state,extra={})=>{
+ const before=agent.state,verified=!!agent.verification;
+ Object.assign(agent,{state},extra);
+ if(state!=='online'||!agent.clients.includes(agent.verification?.client))agent.verification=null;
+ if(before!==state||verified!==!!agent.verification){
+   try{const k=KEY+'-events',events=JSON.parse(sessionStorage.getItem(k)||'[]');
+     events.push({at:new Date().toISOString(),from:before,to:state,verified:!!agent.verification});sessionStorage.setItem(k,JSON.stringify(events.slice(-50)));
+   }catch{/* Session diagnostics are optional. */}
+ }
+ ctx?.changed();
+};
 const sleep=(ms,signal)=>new Promise(r=>{const done=()=>{clearTimeout(t);signal?.removeEventListener('abort',done);r();},t=setTimeout(done,ms);if(signal?.aborted)done();else signal?.addEventListener('abort',done,{once:true});});
 async function post(path,data,signal){const r=await fetch(HUB+path,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data),signal:signal||AbortSignal.timeout(30000),cache:'no-store'});if(!r.ok){const body=await r.json().catch(()=>({}));throw Object.assign(Error(body.error||`连接器返回 ${r.status}`),{code:body.code,status:r.status});}return r.json();}
 
@@ -63,7 +73,7 @@ const tools={
  async zhigao_publish_feishu_extraction({draftId,title,reviewedEntries}){return {ok:true,document:await ctx.publishExtraction(draftId,title,reviewedEntries)};},
  zhigao_prepare_feishu_sync:(args={})=>ctx.prepareFeishuSync(args),
  zhigao_read_feishu_table:args=>ctx.readFeishuTable(args),
- zhigao_status({project}={}){const {settings,tasks,items}=S(),p=findProject(project),ownItems=items.filter(it=>it.projectId===p.id&&activityOf(it)===selectedActivity(p)),ownTasks=tasks.filter(t=>t.projectId===p.id&&activityOf(t)===selectedActivity(p));const by={};for(const it of ownItems){const pr=itemProgress(it,ownTasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
+ zhigao_status({project,invitationPage:expectedPage}={}){if(expectedPage!==undefined&&expectedPage!==invitationPage)throw Object.assign(Error("请在原工作台重新复制接入指令。"),{code:"INVITATION_PAGE_MISMATCH"});const p=findProject(project);if(expectedPage!==undefined)return {connected:true,currentProjectId:p.id,invitationPage,message:'已连接知稿，可以开始审稿。'};const {settings,tasks,items}=S(),ownItems=items.filter(it=>it.projectId===p.id&&activityOf(it)===selectedActivity(p)),ownTasks=tasks.filter(t=>t.projectId===p.id&&activityOf(t)===selectedActivity(p));const by={};for(const it of ownItems){const pr=itemProgress(it,ownTasks.filter(t=>t.itemId===it.id)),w=waitingOn(it,pr);by[WAIT[w]]=(by[WAIT[w]]||0)+1;}
   return{connected:true,invitationPage,protocolVersion:WEB_VERSION,currentProject:p?.name||'',currentProjectId:p.id,currentActivityId:selectedActivity(p),currentActivity:activityName(p),projects:settings.projects.map(p=>({id:p.id,name:p.name,ended:p.status==='ended'})),tasks:ownItems.length,documents:ownTasks.length,waiting:by,
    reviewBatches:(S().batches||[]).filter(b=>b.projectId===p?.id&&activityOf(b)===selectedActivity(p)).map(b=>({batchId:b.id,project:b.projectName})),next:'批量审稿先调用 zhigao_create_review_batch 锁定当前项目和待审清单。单份可用 zhigao_list_tasks 找稿件（wait:"me" 是待我处理），再用 zhigao_get_review_brief 取审稿指令。'};},
  zhigao_list_tasks({project,wait,search}={}){const {settings,tasks,items}=S(),all=false,p=findProject(project);if(!p)throw Error(`找不到项目 ${project}`);
@@ -165,7 +175,6 @@ async function run(){
    if(signal.aborted||id!==pageId||request<this.settled)return;
    this.settled=request;
    this.failedAt??=performance.now();
-   if(agent.state==='online'&&agent.verification&&navigator.onLine!==false&&performance.now()-this.failedAt<15000)return;
    set(performance.now()-this.failedAt<20000?'reconnecting':'offline',{clients:[],error:{code:error.code||error.name||'NETWORK_ERROR',status:error.status||null}});
   }
  };

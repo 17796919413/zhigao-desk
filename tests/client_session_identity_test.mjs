@@ -13,4 +13,10 @@ const cases=[
 for(const [name,rows,family,pid] of cases)assert.deepEqual(selectClientOwner(rows,name),{pid,startedAt:rows[0].startedAt,family});
 for(const name of ['codex-mcp-client','Claude Code','WorkBuddy','DeepSeek Harness','unknown'])assert.equal(selectClientOwner([row(3,'powershell.exe'),row(2,'explorer.exe')],name),null);
 assert.equal(selectClientOwner([row(2,'WorkBuddy.exe')],'codex-mcp-client'),null);
-console.log(JSON.stringify({passed:true,checks:13,scope:'owner selection, native and package launchers; no installed app lifecycle claim'}));
+for(const [family,exe] of [['codex','codex.exe'],['claude','claude.exe'],['workbuddy','WorkBuddy.exe'],['dsh','dsh.exe']]){
+  assert.equal(selectClientOwner([row(3,'cmd.exe'),row(2,exe)],'zhigao')?.family,family);
+}
+assert.equal(selectClientOwner([row(3,'claude.exe'),row(2,'codex.exe')],'codex-mcp-client'),null);
+assert.equal(selectClientOwner([row(3,'third-party.exe'),row(2,'codex.exe')],'zhigao'),null);
+assert.equal(selectClientOwner([row(3,'claude.exe'),row(2,'codex.exe')],'zhigao')?.pid,3);
+console.log(JSON.stringify({passed:true,checks:20,scope:'owner selection only; includes generic name and nested hosts'}));

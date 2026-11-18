@@ -500,7 +500,8 @@ def application_session_matrix(page):
     for name,exe in [('codex-mcp-client','codex.exe'),('Claude Code','claude.exe'),('WorkBuddy','WorkBuddy.exe'),('DeepSeek Harness','dsh.exe')]:
         page.evaluate('a.stopAgent()');client.close()
         command=[str(fixture_dir/exe),shutil.which('node'),str(script)]
-        client=OwnerMCP(script,env,log,page,name=name,command=command)
+        wire_name='zhigao'
+        client=OwnerMCP(script,env,log,page,name=wire_name,command=command)
         print(json.dumps({'application':name,'stage':'native owner initialized'},ensure_ascii=False),flush=True)
         page.evaluate('void a.startAgent()');online(page)
         assert '等待接入' in page.locator('#agent-chip').inner_text()
@@ -524,7 +525,7 @@ def application_session_matrix(page):
         page.wait_for_function("document.querySelector('#agent-chip').textContent.includes('AI 可用')",timeout=12000)
         assert page.evaluate('a.agent.verification.at')==proof
         client.rpc('fixture/start',{})
-        client.rpc('initialize',{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':name,'version':'fixture'}})
+        client.rpc('initialize',{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':wire_name,'version':'fixture'}})
         page.wait_for_timeout(500)
         assert page.evaluate('a.agent.verification.at')==proof
         page.get_by_role('button',name='连接与授权',exact=True).click()
@@ -535,7 +536,7 @@ def application_session_matrix(page):
         assert 'AI 可用' not in page.locator('#agent-chip').inner_text()
         # Same app name, new PID/start time: a copied browser marker cannot grant
         # a new session permission, even after a refresh and several heartbeats.
-        client=OwnerMCP(script,env,log,page,name=name,command=command)
+        client=OwnerMCP(script,env,log,page,name=wire_name,command=command)
         online(page);page.reload();page.wait_for_selector('#agent-chip')
         page.evaluate("async()=>window.a=await import('/agent.js')");online(page)
         page.wait_for_timeout(3000)
@@ -569,10 +570,65 @@ def invitation_recovery_matrix(page):
     client.close();client=MCP(script,env,log,page)
 
 
+def simultaneous_clients(page):
+    # Both protocol clients report the same generic name; no OS owner is known.
+    global client
+    client.close();client=MCP(script,env,log,page,name='zhigao')
+    second=MCP(script,env,log,page,name='zhigao')
+    try:
+        wrong=second.call('zhigao_status',{'invitationPage':'obsolete-page'})
+        assert wrong.get('isError') and 'INVITATION_PAGE_MISMATCH' in str(wrong)
+        assert not page.evaluate('a.agent.verification')
+        assert not client.call('zhigao_status').get('isError')
+        page.wait_for_function('!!a.agent.verification')
+        client.close()
+        page.wait_for_function("a.agent.state==='online'&&!a.agent.verification",timeout=20000)
+        actual=page.evaluate("async()=>(await import('/connection-status.js')).invitationPage")
+        assert not second.call('zhigao_status',{'invitationPage':actual}).get('isError')
+        page.wait_for_function('!!a.agent.verification')
+    finally:
+        second.close();client=MCP(script,env,log,page,name='AI')
+    assert not client.call('zhigao_status').get('isError')
+    page.wait_for_function("a.agent.verification?.client==='AI'")
+
+
+def first_review_after_idle(page):
+    def call(name, args):
+        r=client.call('zhigao_'+name,args)
+        assert not r.get('isError'),r
+        return json.loads(r['content'][0]['text'])
+    # Seed a single text manuscript in this temporary browser only.
+    page.evaluate('''async()=>{const p={id:'candidate',name:'合成测试',rules:[],library:[{id:'brief',kind:'Brief',title:'测试要求',text:'删除相邻重复词。',active:true}]},now=new Date().toISOString();localStorage.setItem('zhigao-settings-v1',JSON.stringify({selected:p.id,projects:[p]}));const db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk');q.onsuccess=()=>r(q.result)});await new Promise((r,j)=>{const tx=db.transaction(['tasks','items'],'readwrite');tx.objectStore('items').put({id:'item',projectId:p.id,title:'合成稿',created:now,publish:{status:'待排期'}});tx.objectStore('tasks').put({id:'draft',itemId:'item',projectId:p.id,filename:'合成稿.txt',fmt:'text',stage:'初稿',cells:[{id:'p',current:'测试测试完成。',original:'测试测试完成。'}],flow:{state:'review',round:1,feedback:[]},rules:[],findings:[],created:now,updated:now});tx.oncomplete=r;tx.onerror=()=>j(tx.error)});db.close()}''')
+    page.reload();page.wait_for_selector('.wb-row')
+    page.evaluate("async()=>window.a=await import('/agent.js')");online(page)
+    original=page.evaluate("async()=>(await import('/connection-status.js')).invitationPage")
+    assert call('status',{'project':'candidate','invitationPage':original})=={'connected':True,'currentProjectId':'candidate','invitationPage':original,'message':'已连接知稿，可以开始审稿。'}
+    page.wait_for_timeout(95000 if REAL_IDLE else 3100)
+    page.reload();page.wait_for_function("document.querySelector('#agent-chip')?.textContent.includes('AI 可用')")
+    brief=call('get_review_brief',{'docId':'draft'});args={'docId':'draft','reviewToken':brief['reviewToken']}
+    sources=[]
+    for section,meta in brief['context'].items():
+        if meta['required'] and not meta.get('complete'):
+            cursor=meta.get('nextCursor')
+            while True:
+                rows=call('read_review_context',{**args,'section':section,**({'cursor':cursor} if cursor else {})});cursor=rows['nextCursor']
+                if section=='sources':sources.extend(rows['items'])
+                if not cursor:break
+    result={'snapshot':brief['snapshot'],'basis':brief['basis'],'reviewedIds':['p'],'ruleChecks':[],'sourceChecks':[],'mediaChecks':[],'warnings':[], 'changes':[{'id':'p','original':'测试测试完成。','revised':'测试完成。','reason':'删除重复的测试二字'}]}
+    assert len(sources)==1 and sources[0]['text']=='删除相邻重复词。',sources
+    result['sourceChecks']=[{'id':sources[0]['id'],'status':'checked','application':'applies','quote':sources[0]['text'],'reason':'稿件开头连续出现两次测试，按要求保留一次。','evidence':[{'blockId':'p','quote':'测试测试完成。'}]}]
+    saved=call('submit_review',{**args,'result':result});assert saved['assurance']['complete'],saved
+    page.reload();page.wait_for_selector('.wb-row')
+    change=page.evaluate('''async()=>{const db=await new Promise(r=>{const q=indexedDB.open('zhigao-desk');q.onsuccess=()=>r(q.result)});try{return await new Promise(r=>{const q=db.transaction('tasks').objectStore('tasks').get('draft');q.onsuccess=()=>r(q.result.ai.changes[0])})}finally{db.close()}}''')
+    assert change['revised']=='测试完成。' and change['status']=='pending',change
+
+
 CASES = [idle_surviving_client, automatic_feishu_status, feishu_stale_response_and_wake, invitation_recovery_matrix,invitation_and_verified_project, activity_toolbar_removed, verification_project_scope, verification_explicit_disconnect, verification_network_recovery,
          wake_no_false_disconnect, stale_heartbeat_failure, stale_heartbeat_success, stale_session_rejection, manual_retry_interrupts_backoff,
          stopped_poll_cannot_reconnect, restored_page_session, multiple_tabs, independent_browser_handoff,
          outage_and_recovery, suspended_transport_and_resume, verification_client_replacement, stale_verification_ack, verification_hub_replacement, verification_idle_refresh, hub_exit_and_client_takeover]
+if not os.environ.get('ZHIGAO_SESSION_FIXTURES_DIR'):
+    CASES.extend([simultaneous_clients,first_review_after_idle])
 if os.environ.get('ZHIGAO_SESSION_FIXTURES_DIR'):
     CASES.insert(0,application_session_matrix)
 try:
