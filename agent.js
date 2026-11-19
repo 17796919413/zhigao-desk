@@ -19,7 +19,7 @@ const WRITES=new Set(['zhigao_update_project','zhigao_submit_review','zhigao_sub
 
 export const agent={state:'off',clients:[],log:[],version:'',verification:null};
 let reviewService=null,videoProcessor=null,libraryProcessor=null,taskBridge=null;
-let ctx=null,abort=null,running=false,lockAbort=null,activeCall=null,maintaining=false,pollAbort=null,retryAbort=null,wakeConnection=null,pageHidden=false;
+let ctx=null,abort=null,running=false,activeCall=null,maintaining=false,pollAbort=null,retryAbort=null,wakeConnection=null,pageHidden=false;
 let pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
 let handoffRequested=false;
 const preference=()=>{try{return localStorage.getItem(KEY);}catch{return null;}};
@@ -29,6 +29,7 @@ const set=(state,extra={})=>{
  const before=agent.state,verified=!!agent.verification;
  Object.assign(agent,{state},extra);
  if(state!=='online'||!agent.clients.includes(agent.verification?.client))agent.verification=null;
+ if(agent.verification?.at)agent.lastConfirmedAt=agent.verification.at;
  if(before!==state||verified!==!!agent.verification){
    try{const k=KEY+'-events',events=JSON.parse(sessionStorage.getItem(k)||'[]');
      events.push({at:new Date().toISOString(),from:before,to:state,verified:!!agent.verification});sessionStorage.setItem(k,JSON.stringify(events.slice(-50)));
@@ -115,12 +116,29 @@ async function handle(call,connection){
  try{const fn=tools[call.name];if(!fn)throw Error(`网页不支持工具 ${call.name}，请刷新工作台到最新版本。`);res={id:call.id,result:await fn(call.args||{})};agent.log.unshift({at,client:call.client,label,ok:true,...(res.result?.savedPath?{path:res.result.savedPath}:{})});}
  catch(e){res={id:call.id,error:e.message||String(e),errorCode:e.code||'REVIEW_ERROR',details:e.details||{}};agent.log.unshift({at,client:call.client,label,ok:false,error:res.error});}
  activeCall.phase='delivering';
+ const invitation=call.name==='zhigao_status'&&call.args?.invitationPage!==undefined&&res.result;
+ if(invitation)res.result={connected:false,receiptProtocol:1,invitationPage,currentProjectId:res.result.currentProjectId,message:'原网页尚未确认连接；请核对连接器版本，不要报告成功。'};
  agent.log.length=Math.min(agent.log.length,30);
  if(WRITES.has(call.name)&&res.result&&!call.args?.dryRun&&res.result.message)ctx.notify(call.name==='zhigao_submit_review'?(call.client||'AI')+' 已提交审稿建议':(call.client||'AI')+' '+res.result.message);
  ctx.changed();
   // Retry delivery of the same result, never re-execute the underlying tool.
   let delivered=false,expired=false;
-  for(let attempt=0;attempt<3&&!delivered;attempt++)try{const request=++connection.sequence,ack=await post('/page/result',{...res,pageId:callPageId});if(ack.accepted===false){expired=true;break;}delivered=true;if(Object.hasOwn(ack,'verification'))connection.success(ack,callPageId,request);}catch(error){if(error.code==='PAGE_SESSION_CHANGED')break;await sleep(500*(attempt+1));}
+  for(let attempt=0;attempt<3&&!delivered;attempt++)try{
+    const request=++connection.sequence,ack=await post('/page/result',{...res,pageId:callPageId},invitation?AbortSignal.timeout(3500):undefined);
+    if(ack.accepted===false){expired=true;break;}
+    if(Object.hasOwn(ack,'verification'))connection.success(ack,callPageId,request);
+    if(invitation&&ack.receipt){
+      if(pageId!==callPageId || S().settings.selected!==ack.verification.projectId)break;
+      if(agent.verification!==ack.verification || !document.querySelector('#agent-chip.on'))continue;
+      const seq=++connection.sequence;
+      const final=await post('/page/result',{id:call.id,pageId:callPageId,confirm:ack.receipt,projectId:S().settings.selected,invitationPage},AbortSignal.timeout(3500));
+      if(Object.hasOwn(final,'verification'))connection.success(final,callPageId,seq);
+      delivered=final.confirmed===true;break;
+    }
+    delivered=!invitation||ack.confirmed===true;
+    break;
+  }catch(error){if(error.code==='PAGE_SESSION_CHANGED')break;await sleep(500*(attempt+1));}
+  if(invitation&&!delivered&&agent.verification?.scope==='pending-receipt')set(agent.state,{verification:null});
   if(!delivered){agent.log.unshift({at:new Date().toISOString(),label:'结果回传失败',ok:false,error:expired?'请求已停止等待，操作结果未交给 AI；请检查已保存进度后续审，勿重复提交。':'操作已执行，但连接器未确认接收；请检查连接与稿件状态，勿重复提交。'});ctx.changed();}
   activeCall=null;
 }
@@ -135,15 +153,16 @@ function reviewProgress(stage){
 }
 
 async function loop(signal,connection){
- let hello=true,wait=3000;
+ let hello=true,wait=3000,recovered=false;
  while(!signal.aborted){
-  const request=++connection.sequence,id=pageId;let controller;
+  const request=++connection.sequence,id=pageId;let controller,takeOver=false;
    try{pollAbort=new AbortController();controller=pollAbort;const onAbort=()=>controller.abort();signal.addEventListener('abort',onAbort,{once:true});const timer=setTimeout(onAbort,35000);let r;
-    const takeOver=handoffRequested;handoffRequested=false;
+    takeOver=handoffRequested;handoffRequested=false;
     try{r=await post('/page/poll',{pageId,projectId:S().settings.selected,title:document.title,hello,takeOver,version:WEB_VERSION,tools:Object.keys(tools)},controller.signal);}finally{clearTimeout(timer);signal.removeEventListener('abort',onAbort);if(pollAbort===controller)pollAbort=null;}
    if(signal.aborted)break;
    hello=false;wait=3000;
    connection.success(r,id,request);
+   if(!recovered){await reviewService.recover();recovered=true;}
    for(const c of r.calls||[]){if(signal.aborted)break;await handle(c,connection);}}
   catch(e){
    if(signal.aborted)break;hello=true;
@@ -151,10 +170,11 @@ async function loop(signal,connection){
    if(controller?.signal.reason==='wake')continue;
    if(['PAGE_SESSION_CHANGED','PAGE_IN_USE'].includes(e.code)&&request<connection.settled)continue;
    if(e.code==='PAGE_SESSION_CHANGED'){
+    recovered=false;
     pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);
     set('reconnecting',{clients:[]});continue;
    }
-   if(e.code==='PAGE_IN_USE'){connection.settled=Math.max(connection.settled,request);set('other-tab',{clients:[]});}else connection.failure(e,request,id);
+   if(e.code==='PAGE_IN_USE'){recovered=false;connection.settled=Math.max(connection.settled,request);set('other-tab',{clients:[]});if(takeOver)ctx.toast?.('未切换：另一页面仍占用连接。如有任务正在运行，请等它结束。');}else connection.failure(e,request,id);
    retryAbort=new AbortController();const retry=retryAbort,onAbort=()=>retry.abort();signal.addEventListener('abort',onAbort,{once:true});
    try{await sleep(wait,retry.signal);}finally{signal.removeEventListener('abort',onAbort);if(retryAbort===retry)retryAbort=null;}
    wait=Math.min(wait*2,15000);
@@ -189,9 +209,9 @@ async function run(){
   }finally{beating=false;}
  };
  const heartbeat=setInterval(beat,10000);
- const wake=()=>{if(signal.aborted)return;beat();retryAbort?.abort();if(!activeCall)pollAbort?.abort('wake');};wakeConnection=wake;
+ const wake=()=>{if(signal.aborted)return;if(!handoffRequested)beat();retryAbort?.abort();if(!activeCall)pollAbort?.abort('wake');};wakeConnection=wake;
  const maintenance=setInterval(async()=>{if(maintaining||signal.aborted||agent.state!=='online')return;maintaining=true;try{await reviewService.maintainLeases();}catch(error){agent.log.unshift({at:new Date().toISOString(),label:'自动续租失败',ok:false,error:error.message});}finally{maintaining=false;}},60000);
-  try{await reviewService.recover();await loop(signal,connection);}finally{clearInterval(heartbeat);clearInterval(maintenance);if(wakeConnection===wake)wakeConnection=null;running=false;if(signal.aborted){disconnectPage(!agentWanted());if(agentWanted())queueMicrotask(startAgent);}}
+  try{await loop(signal,connection);}finally{clearInterval(heartbeat);clearInterval(maintenance);if(wakeConnection===wake)wakeConnection=null;running=false;if(signal.aborted){disconnectPage(!agentWanted());if(agentWanted())queueMicrotask(startAgent);}}
 }
 
 let discovering=false;
@@ -204,15 +224,13 @@ export async function startAgent({takeOver=false}={}){
  if(takeOver)handoffRequested=true;
  if(pageHidden)return;
  remember(true);if(running){wakeConnection?.();return;}pageId=crypto.randomUUID?.()||String(Math.random()).slice(2);running=true;set('connecting');
- if(!navigator.locks)return run();
- lockAbort=new AbortController();
- const got=await navigator.locks.request('zhigao-agent',{ifAvailable:true},async l=>{if(!l)return false;await run();return true;});
- if(got===false&&running){set('other-tab');try{await navigator.locks.request('zhigao-agent',{signal:lockAbort.signal},()=>run());}catch{running=false;}}
+ // The connector arbitrates ownership for both tabs and browsers, including its busy guard.
+ return run();
 }
 const disconnectPage=(permanent=false)=>{try{navigator.sendBeacon(HUB+'/page/disconnect',JSON.stringify({pageId,permanent}));}catch{}};
-window.addEventListener('pagehide',()=>{pageHidden=true;lockAbort?.abort();abort?.abort();set('off');disconnectPage();});
+window.addEventListener('pagehide',()=>{pageHidden=true;abort?.abort();set('off');disconnectPage();});
 window.addEventListener('pageshow',()=>{if(pageHidden){pageHidden=false;discoverAgent();}});
-export function stopAgent(){remember(false);try{localStorage.removeItem(VERIFIED_KEY);}catch{}lockAbort?.abort();abort?.abort();if(!activeCall)disconnectPage(true);set('off',{clients:[]});}
+export function stopAgent(){remember(false);try{localStorage.removeItem(VERIFIED_KEY);}catch{}abort?.abort();if(!activeCall)disconnectPage(true);set('off',{clients:[]});}
 
 export const withReviewLock=fn=>reviewService?reviewService.exclusive(fn):fn();
 export const forgetReviews=(ids,projectIds)=>reviewService?.forget(ids,projectIds);
