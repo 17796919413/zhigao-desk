@@ -58,7 +58,7 @@ try:
             if action == 'apply' and not fixture['busy']:
                 fixture['installed'] = '1.9.0'
             state = 'waiting_for_idle' if fixture['busy'] and action in ['apply', 'status'] else 'current' if fixture['installed'] == '1.9.0' else 'available'
-            return route.fulfill(json={'ok': True, 'data': {'state': state, 'installedVersion': fixture['installed'], 'runningVersion': fixture['installed'], 'latestVersion': '1.9.0', 'canUpdate': fixture['installed'] != '1.9.0'}})
+            return route.fulfill(json={'ok': True, 'data': {'state': state, 'installedVersion': fixture['installed'], 'runningVersion': fixture.get('running',fixture['installed']), 'latestVersion': '1.9.0', 'canUpdate': fixture['installed'] != '1.9.0'}})
 
         def manifest(route):
             if fixture['remote_failure']:
@@ -77,8 +77,9 @@ try:
         ok('默认只增加检查更新按钮，保留原三项连接；未连接AI也可点击')
 
         check.click()
-        page.get_by_text('未检测到本机连接器。请启动后再检查；首次使用需安装一次。', exact=True).wait_for()
-        assert page.locator('[data-action=connect-update-wake]').is_visible()
+        page.get_by_text('未能读取本机版本。请打开 AI 客户端，将上方接入指令发给它。', exact=True).wait_for()
+        assert page.get_by_role('button',name='启动连接器').count()==0 and page.get_by_role('button',name='安装 / 升级').count()==0
+        page.screenshot(path=str(OUT/'desktop-offline.png'))
         assert '最新 1.9.0' in page.locator('.connect-update').inner_text()
         assert '未读取' in page.locator('.connect-update').inner_text()
         assert page.locator('[data-action=connect-update-apply]').count() == 0
@@ -86,23 +87,29 @@ try:
 
         fixture['mode'] = 'legacy'
         check.click()
-        page.get_by_text('此旧版还没有网页更新能力，需要先安装一次新版。', exact=True).wait_for()
-        ok('旧版缺少更新接口时提供一次性升级入口')
+        page.get_by_text('当前连接器不支持网页升级。请将上方接入指令发给 AI 完成升级。', exact=True).wait_for()
+        ok('旧版无升级接口时走 AI，不提供无效升级按钮')
 
         fixture['mode'] = 'ready'
         check.click()
         page.locator('[data-action=connect-update-apply]').wait_for()
         assert page.locator('[data-status=ai]').inner_text() == '未连接'
-        assert '每 6 小时' in page.locator('.connect-update').inner_text()
-        assert '15 分钟' in page.locator('.connect-update').inner_text()
+        assert page.get_by_role('button',name='升级到 1.9.0',exact=True).is_visible()
         page.screenshot(path=str(OUT / 'desktop-update.png'))
-        ok('AI未连接时显示本机和最新版本，并可点击更新；频次明确')
+        ok('AI未连接时显示本机和目标版本，并可点击升级')
 
         page.locator('[data-action=connect-update-apply]').click()
         page.get_by_text('连接器已是最新版本。', exact=True).wait_for()
         assert page.locator('[data-status=ai]').inner_text() == '未连接'
         assert calls.count('apply') == 1
         ok('更新成功刷新版本，不擅自连接AI或操作业务资料')
+        for running in [None,'1.8.1']:
+            fixture['running']=running
+            check.click()
+            page.wait_for_function("!document.querySelector('[data-update-status]').textContent.includes('正在检查')")
+            assert '已是最新' not in page.locator('.connect-update').inner_text()
+        del fixture['running']
+        ok('运行版本缺失或落后时不报已是最新')
 
         fixture['installed'] = '1.8.1'
         fixture['busy'] = True

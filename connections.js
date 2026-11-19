@@ -40,11 +40,11 @@ export function createConnections(ctx) {
   })[ctx.agent.state] || ['未连接', '连接 AI 客户端，完成审稿与资料提炼。'];
 
   function aiGuide() {
-    return `<p>手动配置可参考<a href="./AGENT_SETUP.md" target="_blank" rel="noopener">接入说明</a>。</p><details class="connect-more"><summary>手动配置与排障</summary><ol class="connect-steps"><li>确认电脑已有 Node.js。<a href="https://nodejs.org/zh-cn" target="_blank" rel="noopener">获取 Node.js ↗</a></li><li>复制并运行连接器安装命令。${command('connector', ctx.installCommand())}</li><li>在目标客户端重新加载知稿 MCP（必要时重启客户端），再点击“连接 AI”。浏览器询问本地网络访问时，选择允许。</li></ol>
-      <p class="connect-note">模型在 AI 客户端中选择；审稿时保持工作台页面打开。</p>
-      <details class="connect-more"><summary>其他客户端与 Mac</summary><p>支持 MCP 的客户端可手动添加 stdio 服务：命令填 <code>node</code>，参数填连接器的完整路径。</p><a href="./zhigao-connector.mjs" download="zhigao-connector.mjs">下载连接器</a><p>Mac：在终端运行以下命令，再重启客户端。</p>${command('mac', ctx.macCommand())}</details>
-      <p>客户端找不到知稿工具：重新加载 MCP，只有客户端要求时才重启。连接器未运行：打开已配置的 AI 客户端。浏览器拦截本地网络：在网站设置中允许本地网络访问，再刷新页面。</p></details>
-      <div class="connect-actions">${button('agent-on', ctx.agent.state === 'online' ? '重新连接' : '连接 AI')}${ctx.agent.state !== 'off' ? button('agent-off', '断开 AI') : ''}</div>`;
+    return `<div class="connect-actions">${button('agent-on', ctx.agent.state === 'online' ? '重新连接' : '连接 AI')}${ctx.agent.state !== 'off' ? button('agent-off', '断开 AI') : ''}</div>`;
+  }
+  function invitation(p){
+    const prompt=connectionPrompt(location.href,p);
+    return update?.state==='legacy'?'当前客户端的知稿连接器过旧，不支持网页升级。先按正式站更新清单升级当前客户端的连接器，校验文件并确认运行版本；不要改其他客户端配置。然后按下文验证原网页。\n'+prompt:prompt;
   }
   function feishuGuide() {
     const needsInstall = ['unknown', 'missing', 'config'].includes(feishu.state);
@@ -60,13 +60,14 @@ export function createConnections(ctx) {
   }
   function updatePanel() {
     if(!update)return '';
-    const labels={checking:'正在检查版本…',available:'有新版连接器可用。',current:'连接器已是最新版本。',waiting_for_idle:'正在处理任务，完成后自动更新。',downloading:'正在更新…',updating_elsewhere:'本机另一个客户端正在更新…',offline:'未检测到本机连接器。请启动后再检查；首次使用需安装一次。',waking:'正在等待本机连接器启动…',legacy:'此旧版还没有网页更新能力，需要先安装一次新版。',origin:'当前网址未获本机连接器允许，请从正式知稿网址打开。',network_error:'无法获取最新版本，请检查网络后重试。',error:'检查或更新未完成，现有版本继续可用。'};
+    const labels={checking:'正在检查版本…',available:'有新版连接器可用。',current:'连接器已是最新版本。',waiting_for_idle:'正在处理任务，完成后自动更新。',downloading:'正在更新…',updating_elsewhere:'本机另一个客户端正在更新…',offline:'未能读取本机版本。请打开 AI 客户端，将上方接入指令发给它。',legacy:'当前连接器不支持网页升级。请将上方接入指令发给 AI 完成升级。',origin:'当前网址未获本机连接器允许，请从正式知稿网址打开。',network_error:'无法获取最新版本，请检查网络后重试。',error:'未能确认更新结果，请重新检查。'};
     const runtimeOld=update.installedVersion&&update.runningVersion&&newer(update.installedVersion,update.runningVersion);
     let message=labels[update.state]||'检查尚未完成。';
     if(update.state==='current'&&runtimeOld)message='新版已安装，运行中的旧连接正在等待切换。';
+    else if(update.state==='current'&&(!update.remoteChecked||!update.latestVersion||update.installedVersion!==update.latestVersion||update.runningVersion!==update.latestVersion))message='未能确认正在运行的版本，请重新检查。';
     if(['UPDATE_INTEGRITY','UPDATE_SYNTAX'].includes(update.error))message='更新文件未通过校验，已保留现有版本。稍后重试。';
     const available=update.state==='available'&&newer(update.latestVersion,update.installedVersion);
-    return `<section class="connect-update" aria-live="polite" aria-label="更新检查结果"><p data-update-status>${esc(message)}</p><p class="connect-note">网页 ${WEB_VERSION} · 本机连接器 ${esc(update.installedVersion||'未读取')} · 最新 ${esc(update.latestVersion||'未获取')}${runtimeOld||(!update.installedVersion&&update.runningVersion)?` · 正在运行 ${esc(update.runningVersion)}`:''}</p><div class="connect-actions">${available?button('connect-update-apply','更新连接器',updateBusy?'disabled':''):''}${['offline','waking'].includes(update.state)?button('connect-update-wake','启动连接器',update.state==='waking'?'disabled':''):''}${['offline','legacy'].includes(update.state)?button('connect-expand','安装 / 升级','data-section="ai"'):''}${update.webUpdate?button('connect-update-refresh','刷新网页'):''}</div></section>`;
+    return `<section class="connect-update" aria-live="polite" aria-label="更新检查结果"><p data-update-status>${esc(message)}</p><p class="connect-note">网页 ${WEB_VERSION} · 本机连接器 ${esc(update.installedVersion||'未读取')} · 最新 ${esc(update.latestVersion||'未获取')}${runtimeOld||(!update.installedVersion&&update.runningVersion)?` · 正在运行 ${esc(update.runningVersion)}`:''}</p><div class="connect-actions">${available?button('connect-update-apply','升级到 '+esc(update.latestVersion),updateBusy?'disabled':''):''}${update.webUpdate?button('connect-update-refresh','刷新网页'):''}</div></section>`;
   }
   function body() {
     const p = ctx.project(), folder = ctx.folder(p.id), folderState = ctx.folderState(p.id), [aiLabel, aiDesc] = aiInfo();
@@ -75,7 +76,7 @@ export function createConnections(ctx) {
     const fsDesc = checking || feishu.state === 'ready' ? '' : issue?.[2] || '登录后可读取和同步审核表。';
     const folderLabel = !folderSupported() ? '使用下载' : folderState === 'granted' ? '已关联' : folder ? '待授权' : '未设置';
     const folderDesc = folder ? folder.name : '选择文件夹，自动保存审稿文件。';
-    return `<section class="connect-start" aria-label="让 AI 帮你接入"><p>复制指令，发给你正在使用的 AI。</p><div class="connect-actions">${ctx.btn('connect-copy-invitation','复制接入指令','primary')}</div><details class="connect-more"><summary>查看接入指令</summary><textarea id="connect-invitation" aria-label="接入指令" readonly rows="7">${esc(connectionPrompt(location.href,p))}</textarea></details></section><div class="connect-intro-row"><p class="connect-intro">当前品牌：${esc(p.name||'未选择')}</p>${button('connect-update-check',updateBusy?(update?.state==='downloading'?'更新中…':'检查中…'):'检查更新',updateBusy?'disabled':'')}</div>` +updatePanel()+
+    return `<section class="connect-start" aria-label="让 AI 帮你接入"><p>复制指令，发给你正在使用的 AI。</p><div class="connect-actions">${ctx.btn('connect-copy-invitation','复制接入指令','primary')}</div><details class="connect-more"><summary>查看接入指令</summary><textarea id="connect-invitation" aria-label="接入指令" readonly rows="7">${esc(invitation(p))}</textarea></details></section><div class="connect-intro-row"><p class="connect-intro">当前品牌：${esc(p.name||'未选择')}</p>${button('connect-update-check',updateBusy?(update?.state==='downloading'?'更新中…':'检查中…'):'检查更新',updateBusy?'disabled':'')}</div>` +updatePanel()+
       row('ai', 'AI 审稿', aiLabel, [aiDesc,ctx.agent.lastConfirmedAt?'上次确认：'+new Date(ctx.agent.lastConfirmedAt).toLocaleTimeString('zh-CN',{hour12:false}):''].filter(Boolean).join(' · '), ctx.agent.state==='other-tab'?button('agent-on','在此浏览器接入'):['off','offline','reconnecting','waiting'].includes(ctx.agent.state) ? button('agent-on',ctx.agent.state==='off'?'连接 AI':'重新连接') : '', aiGuide()) +
       row('feishu', '飞书同步', fsLabel, fsDesc, button('connect-check', checking ? '检查中…' : '检查连接', checking ? 'disabled' : ''), feishuGuide() + (['connector','update','origin'].includes(feishu.state) ? button('connect-expand', '设置连接器', 'data-section="ai"') : '')) +
       row('folder', '本地归档', folderLabel, folderDesc, folderSupported() && p.id ? button(folder && folderState !== 'granted' ? 'connect-folder-grant' : 'connect-folder-pick', folder ? folderState === 'granted' ? '更换文件夹' : '授权文件夹' : '选择文件夹', `data-pid="${esc(p.id)}"`) : '', `<p>选择文件夹并允许保存。未设置时，可直接下载审稿文件。</p>`) +
@@ -148,15 +149,9 @@ export function createConnections(ctx) {
       finally{updateBusy=false;refresh();}
       if(['waiting_for_idle','downloading','updating_elsewhere'].includes(update.state)||(update.state==='current'&&newer(update.installedVersion,update.runningVersion)))watchUpdate(++updatePoll);
     }
-    if(action==='connect-update-wake'){
-      update={...update,state:'waking'};refresh();location.href='zhigao-desk://check-updates';
-      const token=++updatePoll;
-      const poll=async n=>{if(token!==updatePoll||!document.querySelector('#connections-body'))return;try{const status=await localUpdate();update={...update,...status};await checkVersion();return;}catch{}if(n<10)setTimeout(()=>poll(n+1),1500);else{update={...update,state:'offline'};refresh();}};
-      setTimeout(()=>poll(0),1500);
-    }
     if(action==='connect-update-refresh')location.reload();
     if(action==='connect-copy-invitation'){
-      const value=connectionPrompt(location.href,ctx.project());
+      const value=invitation(ctx.project());
       if(!['online','waiting'].includes(ctx.agent.state))void ctx.startAgent({takeOver:true});
       try{await navigator.clipboard.writeText(value);ctx.toast('已复制，粘贴到你的 AI 客户端并发送。');}
       catch{const field=document.getElementById('connect-invitation');field.closest('details').open=true;field.value=value;field.focus();field.select();ctx.toast('请复制已选中的接入指令，粘贴到你的 AI 客户端。');}
